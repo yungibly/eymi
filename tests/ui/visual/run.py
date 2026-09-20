@@ -54,7 +54,14 @@ def click_word(session, word):
 
 
 def check_matches(session):
-    chunks = list(find_cells(session.cells(), "probe"))
+    cells = session.cells()
+    # Identify document occurrences by fixture context. The Find field contains
+    # the same query and may have its own background or selection styling.
+    chunks = []
+    for phrase in ["probe first", "probe second", "probe third"]:
+        occurrences = list(find_cells(cells, phrase))
+        session.check(len(occurrences) == 1, "Visible document match: " + phrase)
+        chunks.append(occurrences[0][:len("probe")])
     active = [v for v in chunks if all(c["bold"] and c["underline"] and c["bg"] != "default" for c in v)]
     passive = [v for v in chunks if all(c["bg"] != "default" and not c["underline"] for c in v)]
     session.check(len(active) == 1 and len(passive) == 2,
