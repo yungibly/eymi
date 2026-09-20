@@ -31,6 +31,12 @@ enum Overlay {
     Search { replace: bool },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MessageOrigin {
+    General,
+    Clipboard,
+}
+
 pub struct App {
     pub document: Document,
     file: Option<FileState>,
@@ -53,6 +59,7 @@ pub struct App {
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
+    message_origin: MessageOrigin,
     layout_key: Option<(u64, Selection, usize, bool)>,
     terminal_height: u16,
     terminal_width: u16,
@@ -93,18 +100,24 @@ impl App {
     pub(crate) fn set_message(&mut self, message: impl Into<String>) {
         self.message = message.into();
         self.message_is_error = true;
+        self.message_origin = MessageOrigin::General;
     }
 
     fn inform(&mut self, message: impl Into<String>) {
         if !self.message_is_error {
             self.message = message.into();
+            self.message_origin = MessageOrigin::General;
         }
     }
 
     fn clipboard_feedback(&mut self, message: String, failed: bool) {
         if failed {
             self.set_message(message);
+            self.message_origin = MessageOrigin::Clipboard;
         } else {
+            if self.message_origin == MessageOrigin::Clipboard {
+                self.message_is_error = false;
+            }
             self.inform(message);
         }
     }
@@ -175,6 +188,7 @@ impl App {
             should_exit: false,
             message: String::new(),
             message_is_error: false,
+            message_origin: MessageOrigin::General,
             layout_key: None,
             terminal_height: 24,
             terminal_width: 80,
@@ -309,6 +323,7 @@ impl App {
                 let _ = self.document.set_caret(self.document.selection().head);
                 self.message.clear();
                 self.message_is_error = false;
+                self.message_origin = MessageOrigin::General;
             }
             KeyCode::Left => {
                 self.document.move_left(shift);
@@ -843,6 +858,7 @@ impl App {
                     self.document.mark_saved();
                     self.message = format!("Saved {}", safe_text(&file.path.display().to_string()));
                     self.message_is_error = false;
+                    self.message_origin = MessageOrigin::General;
                     self.overlay = Overlay::None;
                     self.should_exit = quit_after;
                 }
@@ -886,6 +902,7 @@ impl App {
                             self.message =
                                 format!("Saved {}", safe_text(&file.path.display().to_string()));
                             self.message_is_error = false;
+                            self.message_origin = MessageOrigin::General;
                             self.file = Some(file);
                             self.document.mark_saved();
                             self.overlay = Overlay::None;
@@ -2232,6 +2249,49 @@ mod tests {
         key(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert!(app.message.is_empty());
         assert_eq!(native.lock().unwrap().writes, ["keep"]);
+    }
+
+    #[test]
+    fn successful_clipboard_retry_replaces_only_a_clipboard_warning() {
+        for field in [None, Some(Focus::Query), Some(Focus::Replacement)] {
+            for command in ['c', 'v'] {
+                let mut app = App::new("cat dog".into(), None, true);
+                let native = fake_clipboard(&mut app);
+                if let Some(focus) = field {
+                    search(&mut app, "cat", true);
+                    if focus == Focus::Replacement {
+                        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+                        app.handle_event(Event::Paste("replacement".into()));
+                    }
+                }
+                key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+                key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
+                assert!(app.message_is_error && app.message.contains("no text"));
+                native.lock().unwrap().text = "dog".into();
+                key(&mut app, KeyCode::Char(command), KeyModifiers::CONTROL);
+                assert!(!app.message_is_error);
+                assert!(!app.message.contains("no text"));
+                assert!(app.message.contains("system clipboard"));
+                if command == 'v' {
+                    let text = field.map_or_else(
+                        || app.document.text(),
+                        |focus| app.search.input(focus).text(),
+                    );
+                    assert_eq!(text, "dog");
+                }
+                if field.is_some() {
+                    assert_eq!(app.document.text(), "cat dog");
+                }
+                key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+                assert!(app.message.is_empty());
+
+                app.set_message("File changed; use Save As");
+                key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+                key(&mut app, KeyCode::Char(command), KeyModifiers::CONTROL);
+                assert!(app.message_is_error);
+                assert_eq!(app.message, "File changed; use Save As");
+            }
+        }
     }
 
     #[test]
