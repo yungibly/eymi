@@ -22,6 +22,32 @@ use std::{io, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+// Pair every chrome background with its own foreground: terminal defaults may
+// be either light or dark. These styles do not change the document palette.
+pub(crate) fn chrome_style() -> Style {
+    Style::default()
+        .fg(Color::Rgb(224, 228, 235))
+        .bg(Color::Rgb(43, 47, 55))
+}
+
+pub(crate) fn chrome_muted() -> Style {
+    chrome_style().fg(Color::Rgb(166, 174, 187))
+}
+
+pub(crate) fn chrome_active() -> Style {
+    chrome_style()
+        .bg(Color::Rgb(60, 67, 79))
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+}
+
+fn chrome_field() -> Style {
+    chrome_style().bg(Color::Rgb(24, 28, 35))
+}
+
+fn chrome_focus() -> Style {
+    chrome_style().fg(Color::Rgb(126, 211, 215))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Overlay {
     None,
@@ -1009,8 +1035,7 @@ impl App {
             if self.document.is_dirty() { " *" } else { "" }
         );
         frame.render_widget(
-            Paragraph::new(title)
-                .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+            Paragraph::new(title).style(chrome_active()),
             Rect::new(area.x, area.y, area.width, area.height.min(1)),
         );
         let selection = self.document.selection().range();
@@ -1131,6 +1156,10 @@ impl App {
             Focus::Query => "Find: [",
             Focus::Replacement => "With: [",
         };
+        frame.render_widget(
+            Block::default().style(chrome_field()),
+            Rect::new(area.x + 7, area.y, area.width.saturating_sub(8), 1),
+        );
         let mut map = draw_field(
             frame,
             Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
@@ -1140,12 +1169,18 @@ impl App {
             focused,
             frozen_start,
         );
+        if focused {
+            frame.buffer_mut().set_style(
+                Rect::new(area.x, area.y, area.width.min(7), 1),
+                chrome_focus().add_modifier(Modifier::BOLD),
+            );
+        }
         if area.width > 0 {
             frame.render_widget(
                 Paragraph::new("]").style(if focused {
-                    Style::default().fg(Color::Cyan)
+                    chrome_focus()
                 } else {
-                    Style::default().add_modifier(Modifier::DIM)
+                    chrome_muted()
                 }),
                 Rect::new(area.right() - 1, area.y, 1, 1),
             );
@@ -1166,6 +1201,7 @@ impl App {
         let panel = Rect::new(area.x, area.bottom() - 1 - height, area.width, height);
         self.search_geometry.panel = panel;
         frame.render_widget(Clear, panel);
+        frame.render_widget(Block::default().style(chrome_style()), panel);
         let row = |offset: u16| {
             Rect::new(
                 panel.x + 1,
@@ -1206,7 +1242,7 @@ impl App {
                 Focus::Query,
             );
             frame.render_widget(
-                Paragraph::new(counts).style(Style::default().add_modifier(Modifier::DIM)),
+                Paragraph::new(counts).style(chrome_muted()),
                 Rect::new(query_row.x + field_width + 1, query_row.y, count_width, 1),
             );
             self.search_geometry.buttons = draw_search_buttons(
@@ -1243,8 +1279,7 @@ impl App {
             );
             if count_fits {
                 frame.render_widget(
-                    Paragraph::new(counts.as_str())
-                        .style(Style::default().add_modifier(Modifier::DIM)),
+                    Paragraph::new(counts.as_str()).style(chrome_muted()),
                     Rect::new(query_row.right() - count_width, query_row.y, count_width, 1),
                 );
             }
@@ -1267,6 +1302,7 @@ impl App {
             return;
         }
         let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+        frame.render_widget(Block::default().style(chrome_style()), footer);
         let head = self.document.selection().head;
         let line = self.document.text()[..head]
             .graphemes(true)
@@ -1329,9 +1365,9 @@ impl App {
         let show_position = !self.message_is_error
             && usize::from(area.width) >= left_width + usize::from(right_width) + 4;
         let style = if self.message_is_error {
-            Style::default().fg(Color::Yellow)
+            chrome_style().fg(Color::Yellow)
         } else {
-            Style::default().add_modifier(Modifier::DIM)
+            chrome_muted()
         };
         frame.render_widget(
             Paragraph::new(format!(" {left}")).style(style),
@@ -1348,7 +1384,7 @@ impl App {
         );
         if show_position {
             frame.render_widget(
-                Paragraph::new(right).style(Style::default().add_modifier(Modifier::DIM)),
+                Paragraph::new(right).style(chrome_muted()),
                 Rect::new(footer.right() - right_width - 1, footer.y, right_width, 1),
             );
         }
@@ -1443,11 +1479,9 @@ fn draw_search_buttons(
         }
         let rect = Rect::new(area.x + column as u16, area.y, width as u16, 1);
         let style = if *enabled {
-            Style::default().add_modifier(Modifier::UNDERLINED)
+            chrome_style().add_modifier(Modifier::UNDERLINED)
         } else {
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM)
+            chrome_muted()
         };
         frame.render_widget(Paragraph::new(text).style(style), rect);
         buttons.push(SearchButton {
@@ -2044,7 +2078,7 @@ mod tests {
             let field = app.search_geometry.fields[0].area;
             assert_eq!(
                 terminal.backend().buffer()[(field.x, field.y)].fg,
-                Color::Cyan
+                chrome_focus().fg.unwrap()
             );
             let cursor = terminal.get_cursor_position().unwrap();
             assert!(contains(field, cursor.x, cursor.y));
@@ -2140,6 +2174,46 @@ mod tests {
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.message.is_empty() && !app.message_is_error);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "external edit");
+    }
+
+    #[test]
+    fn chrome_backgrounds_fill_bars_and_pair_field_colors_without_body_bleed() {
+        for width in [42, 80] {
+            let mut app = App::new("cat cat".into(), None, true);
+            search(&mut app, "cat", true);
+            key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+            let terminal = draw(&mut app, width, 24);
+            let buffer = terminal.backend().buffer();
+            for x in 0..width {
+                assert_ne!(buffer[(x, 0)].bg, Color::Reset);
+                assert_ne!(buffer[(x, 23)].bg, Color::Reset);
+                assert_eq!(buffer[(x, 1)].bg, Color::Reset);
+                assert_eq!(buffer[(x, app.viewport.bottom() - 1)].bg, Color::Reset);
+                for y in app.search_geometry.panel.y..app.search_geometry.panel.bottom() {
+                    assert_ne!(buffer[(x, y)].bg, Color::Reset);
+                }
+            }
+            let field = &app.search_geometry.fields[0];
+            let selected = &buffer[(field.glyphs[0].column, field.area.y)];
+            assert!(selected.modifier.contains(Modifier::REVERSED));
+            assert_ne!(selected.fg, Color::Reset);
+            assert_ne!(selected.bg, Color::Reset);
+            assert_ne!(selected.fg, selected.bg);
+            assert_ne!(selected.bg, buffer[(0, field.area.y)].bg);
+            key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+            let terminal = draw(&mut app, width, 24);
+            let disabled = button(&app, SearchAction::Next);
+            assert!(!disabled.enabled);
+            let cell = &terminal.backend().buffer()[(disabled.area.x, disabled.area.y)];
+            assert_ne!(cell.fg, cell.bg);
+            assert!(
+                !cell
+                    .modifier
+                    .intersects(Modifier::DIM | Modifier::UNDERLINED)
+            );
+            assert_eq!(app.document.text(), "cat cat");
+            assert!(!app.document.is_dirty());
+        }
     }
 
     #[test]
@@ -2655,11 +2729,9 @@ mod tests {
         ] {
             let target = button(&app, action);
             assert!(!target.enabled);
-            assert!(
-                terminal.backend().buffer()[(target.area.x, target.area.y)]
-                    .modifier
-                    .contains(Modifier::DIM)
-            );
+            let cell = &terminal.backend().buffer()[(target.area.x, target.area.y)];
+            assert_eq!(cell.fg, chrome_muted().fg.unwrap());
+            assert!(!cell.modifier.contains(Modifier::UNDERLINED));
         }
         let revision = app.document.revision();
         click_button(&mut app, SearchAction::ReplaceAll);

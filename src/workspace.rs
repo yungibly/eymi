@@ -1,6 +1,6 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
 use crate::{
-    app::App,
+    app::{App, chrome_active, chrome_muted, chrome_style},
     browser::{Action as BrowserAction, Browser},
     clipboard::Clipboard,
     projection::safe_text,
@@ -9,7 +9,6 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, 
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::{
@@ -421,7 +420,9 @@ impl Workspace {
         self.tab_hits.clear();
         let area = frame.area();
         if area.height > 0 && area.width > 0 {
-            frame.render_widget(Clear, Rect::new(area.x, area.y, area.width, 1));
+            let strip = Rect::new(area.x, area.y, area.width, 1);
+            frame.render_widget(Clear, strip);
+            frame.render_widget(Block::default().style(chrome_style()), strip);
             let width = usize::from(area.width);
             let labels: Vec<_> = (0..self.tabs.len())
                 .map(|i| clipped(&self.label(i), width.min(30)))
@@ -438,7 +439,7 @@ impl Workspace {
             if start > 0 && width > 3 {
                 frame
                     .buffer_mut()
-                    .set_string(x, area.y, "‹ ", Style::default());
+                    .set_string(x, area.y, "‹ ", chrome_muted());
                 x += 2;
             }
             for (index, label) in labels.iter().enumerate().skip(start) {
@@ -453,9 +454,9 @@ impl Workspace {
                 };
                 let cells = UnicodeWidthStr::width(label.as_str()) as u16;
                 let style = if index == self.active {
-                    Style::default().add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+                    chrome_active()
                 } else {
-                    Style::default().add_modifier(Modifier::DIM)
+                    chrome_muted()
                 };
                 frame.buffer_mut().set_string(x, area.y, &label, style);
                 self.tab_hits.push((Rect::new(x, area.y, cells, 1), index));
@@ -572,7 +573,11 @@ pub(crate) fn path_identity(path: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, MouseEvent};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        style::{Color, Modifier},
+    };
 
     fn key(app: &mut Workspace, code: KeyCode, modifiers: KeyModifiers) {
         app.handle_event(Event::Key(KeyEvent::new(code, modifiers)));
@@ -773,6 +778,22 @@ mod tests {
                 .contains(Modifier::BOLD | Modifier::UNDERLINED)
         );
         assert!(!first.modifier.contains(Modifier::REVERSED));
+        assert_ne!(first.bg, Color::Reset);
+        assert_ne!(first.fg, Color::Reset);
+        let inactive = app
+            .tab_hits
+            .iter()
+            .find(|(_, index)| *index != app.active)
+            .unwrap()
+            .0;
+        assert_ne!(
+            first.bg,
+            terminal.backend().buffer()[(inactive.x, inactive.y)].bg
+        );
+        for x in 0..80 {
+            assert_ne!(terminal.backend().buffer()[(x, 0)].bg, Color::Reset);
+            assert_eq!(terminal.backend().buffer()[(x, 1)].bg, Color::Reset);
+        }
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
         assert!(snapshot.lines().next().unwrap().contains("* Untitled 1.md"));
         assert!(!snapshot.lines().next().unwrap().contains("LIVE"));
