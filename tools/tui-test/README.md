@@ -20,4 +20,42 @@ On the current Apple Silicon development host:
 
 Bootstrap, SHA-256 verification, `--version`, and `--help` were checked on macOS arm64. Intel and other operating systems have not been exercised; the bootstrap currently accepts only macOS. Deleting Cargo's target directory also removes this installation; rerun the bootstrap to restore it.
 
-Tool installation is complete. Adoption still depends on the [visual/protocol trial](../../docs/visual-testing-plan.md#smallest-useful-spike), particularly backend input bytes, mode-aware paste, pointer-positioned wheel events, and image fidelity. Pin the executable path in test scripts so a global tool upgrade cannot silently change test behavior.
+## Bounded executable acceptance runner
+
+The standard-library Python adapter in `session.py` drives the compiled program through a real PTY and the embedded Ghostty backend. Marklane's scenarios and fixtures live in `tests/ui/visual/`; the adapter contains no editor-specific behavior.
+
+```sh
+python3 tests/ui/visual/run.py \
+  --tool /absolute/path/to/tui-test \
+  --binary /absolute/path/to/marklane \
+  --output target/visual-baseline \
+  --keyboard baseline
+```
+
+Use `--keyboard enhanced` for a build that activates keyboard disambiguation. `--suite captures` runs only the visual scenarios; `--suite protocol` and `--suite unicode` isolate the other checks. `--palette light` selects the declared light background/foreground. Each output directory must be new, making comparisons between baseline, keyboard-fix, and UI binaries independent of source integration.
+
+The runner copies fixtures before making any edits. It removes inherited `NO_COLOR`, sets `TERM=xterm-256color` and `COLORTERM=truecolor`, and starts a fresh daemon with an isolated `TUI_TEST_HOME` and explicit config; it does not change `HOME`. All operations run within one owning Python process and close only that session. On the tested macOS execution sandbox, the local PTY/socket needs ordinary execution escalation; sandbox failure appears as “socket never started accepting connections.” No native terminal window is required.
+
+Each suite retains:
+
+- Named PNGs and SVGs, complete cells/styles, cursor, modes, and text.
+- `terminal.log` with reversible raw traffic, plus decoded `read.bin`, `write.bin`, and `reply.bin`; automatic cast output is retained separately.
+- `actions.json` with CLI arguments and log offsets, assertions, and protocol byte evidence.
+- Tool/app hashes, version, source checkout revision/status when available, dimensions, environment, palette, and font limitations.
+
+The output root also contains the scenario, helper, fixtures, and original invocation. Replay the saved `scenario.py` with explicit tool/binary paths and a new output directory. Casts replay terminal output; the Python scenario re-executes actions.
+
+The tests inspect actual cells for emphasis, wide-character placement, source selection, and distinct active/passive match backgrounds. Three query matches distinguish previous from next. Protocol checks observe the app's activation before accepting backend-generated modified input. Raw Ghostty 1.3.1 default `ESC[27;2;13~`, enhanced `ESC[13;2u`, and legacy CR are separately labelled parser regressions. Paste honors the observed bracketed-paste mode; wheel events carry a body cell position. Checkbox and multiline-paste operations verify saved scratch source and one-step undo.
+
+## Verified scope and limits
+
+Baseline `54e9dde` and keyboard-fix `6df659f` passed the bounded semantic/protocol checks on macOS arm64. The embedded backend generated `ESC[27;2;13~` before activation, leaving result 2 unchanged. After the app emitted `ESC[>1u`, the same backend Shift+Enter action generated `ESC[13;2u` and selected result 1. Cleanup popped the enhancement once before leaving the alternate screen. The backend's observed default matched the installed Ghostty 1.3.1 profile in this trial.
+
+This is **limited visual adoption**, not complete renderer acceptance:
+
+- Native PNG export rejects any multi-scalar cell grapheme, including `e` plus combining acute. `acceptance.md` retains this original coverage; failed PNGs keep the SVG, cells, and trace. The rasterizer's suggestion to change fonts does not resolve its multi-scalar rejection.
+- The original ZWJ emoji bytes survive app output and source undo, but the backend's cells split the cluster. App cursor placement then overlaps that wider backend representation. No DEC 2027 grapheme-mode activation was observed. SVG conversion cannot repair this cell state; ZWJ visual fidelity is not asserted.
+- `screenshots.md` is an explicitly simplified fixture using precomposed accent/CJK characters, intended for chrome, search layout, and colors. It does not replace the original Unicode fixture.
+- Images use tui-test's own fixed 10×21-cell renderer, 17px JetBrains Mono preference and available system fallbacks. Fonts/fallbacks are not fully pinned, and the images are not Ghostty desktop pixels. Native clipboard, OS shortcuts, and IME are outside this run.
+
+`result.json` reports assertion results and PNG failures separately and leaves full renderer acceptance false. See the [visual testing plan](../../docs/visual-testing-plan.md) for the broader adoption gate. No custom emulator or renderer was added.
