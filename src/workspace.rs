@@ -110,8 +110,6 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
-        self.editor_mut()
-            .set_message("Shared session clipboard · F1 Help · Ctrl+O Open");
         self.tab_hits.clear();
     }
 
@@ -146,8 +144,6 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
-        self.editor_mut()
-            .set_message("Shared session clipboard · F1 Help · Ctrl+O Open");
         self.tab_hits.clear();
         Ok(())
     }
@@ -205,8 +201,6 @@ impl Workspace {
             self.next_number += 1;
         }
         self.active = self.active.min(self.tabs.len() - 1);
-        self.editor_mut()
-            .set_message("Shared session clipboard · F1 Help · Ctrl+O Open");
         self.tab_hits.clear();
     }
 
@@ -411,22 +405,13 @@ impl Workspace {
             })
             .unwrap_or_else(|| format!("Untitled {}.md", tab.number));
         format!(
-            "{}{}{} ",
+            "{}{} ",
             if tab.editor.document.is_dirty() {
                 "* "
             } else {
                 " "
             },
-            safe_text(&filename),
-            if index == self.active {
-                if tab.editor.live {
-                    " · LIVE"
-                } else {
-                    " · SOURCE"
-                }
-            } else {
-                ""
-            }
+            safe_text(&filename)
         )
     }
 
@@ -468,7 +453,7 @@ impl Workspace {
                 };
                 let cells = UnicodeWidthStr::width(label.as_str()) as u16;
                 let style = if index == self.active {
-                    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    Style::default().add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
                 } else {
                     Style::default().add_modifier(Modifier::DIM)
                 };
@@ -766,6 +751,39 @@ mod tests {
         plain(&mut app, 'x');
         assert_eq!(app.editor().document.text(), "x match");
     }
+
+    #[test]
+    fn quiet_tabs_keep_identity_dirty_state_and_view_in_footer() {
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("draft".into()));
+        ctrl(&mut app, 'n');
+        key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
+        let terminal = draw(&mut app, 80, 24);
+        let active = app
+            .tab_hits
+            .iter()
+            .find(|(_, index)| *index == app.active)
+            .unwrap()
+            .0;
+        let first = &terminal.backend().buffer()[(active.x, active.y)];
+        assert_eq!(first.symbol(), "*");
+        assert!(
+            first
+                .modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+        );
+        assert!(!first.modifier.contains(Modifier::REVERSED));
+        let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
+        assert!(snapshot.lines().next().unwrap().contains("* Untitled 1.md"));
+        assert!(!snapshot.lines().next().unwrap().contains("LIVE"));
+        assert!(snapshot.contains("Live · Ln"));
+        assert!(!snapshot.contains("clipboard"));
+        ctrl(&mut app, 'e');
+        let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
+        assert!(snapshot.contains("Source · Ln"));
+        assert!(!snapshot.lines().next().unwrap().contains("SOURCE"));
+    }
+
     #[test]
     fn modified_or_repeated_confirmation_keys_never_discard_or_save() {
         let mut app = Workspace::open(None).unwrap();

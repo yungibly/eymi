@@ -52,8 +52,10 @@ pub struct App {
     overlay: Overlay,
     pub should_exit: bool,
     message: String,
+    message_is_error: bool,
     layout_key: Option<(u64, Selection, usize, bool)>,
     terminal_height: u16,
+    terminal_width: u16,
 }
 
 impl App {
@@ -90,6 +92,13 @@ impl App {
 
     pub(crate) fn set_message(&mut self, message: impl Into<String>) {
         self.message = message.into();
+        self.message_is_error = true;
+    }
+
+    fn inform(&mut self, message: impl Into<String>) {
+        if !self.message_is_error {
+            self.message = message.into();
+        }
     }
 
     pub(crate) fn deactivate(&mut self) {
@@ -156,13 +165,22 @@ impl App {
             field_drag: None,
             overlay: Overlay::None,
             should_exit: false,
-            message: "F1 Help · Internal clipboard · Terminal paste supported".into(),
+            message: String::new(),
+            message_is_error: false,
             layout_key: None,
             terminal_height: 24,
+            terminal_width: 80,
         }
     }
 
     pub fn handle_event(&mut self, event: Event) {
+        if !self.message_is_error
+            && (matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+                || matches!(&event, Event::Paste(text) if !text.is_empty())
+                || matches!(&event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left)))
+        {
+            self.message.clear();
+        }
         let before = (self.document.revision(), self.document.selection().head);
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -186,8 +204,9 @@ impl App {
                 self.search_mouse(event)
             }
             Event::Mouse(event) if self.overlay == Overlay::None => self.mouse(event),
-            Event::Resize(_, height) => {
+            Event::Resize(width, height) => {
                 self.terminal_height = height;
+                self.terminal_width = width;
                 self.dragging = false;
                 self.layout_key = None;
                 self.follow_cursor = true;
@@ -249,7 +268,7 @@ impl App {
                 KeyCode::Char('x') => self.copy(true),
                 KeyCode::Char('v') => {
                     let (text, message) = self.clipboard.paste();
-                    self.message = message;
+                    self.inform(message);
                     if let Some(text) = text {
                         self.document.insert(&text);
                     }
@@ -278,6 +297,7 @@ impl App {
             KeyCode::Esc => {
                 let _ = self.document.set_caret(self.document.selection().head);
                 self.message.clear();
+                self.message_is_error = false;
             }
             KeyCode::Left => {
                 self.document.move_left(shift);
@@ -354,7 +374,7 @@ impl App {
             anchor,
             head: offset,
         }) {
-            self.message = error.to_string();
+            self.set_message(error.to_string());
         }
     }
 
@@ -411,8 +431,8 @@ impl App {
                     .cloned()
                 {
                     match self.document.toggle_task(&task) {
-                        Ok(_) => self.message = "Task toggled · Ctrl+Z undo".into(),
-                        Err(error) => self.message = error.to_string(),
+                        Ok(_) => self.inform("Task toggled · Ctrl+Z undo"),
+                        Err(error) => self.set_message(error.to_string()),
                     }
                     self.follow_cursor = false;
                     return;
@@ -443,20 +463,13 @@ impl App {
     fn toggle_view(&mut self) {
         if self.markdown {
             self.live = !self.live;
-            self.message = if self.live {
-                "Live view · Active block shows source"
-            } else {
-                "Source view · Markdown helpers remain enabled"
-            }
-            .into();
-        } else {
-            self.message = "Plain text file · Source view".into();
         }
     }
 
     fn copy(&mut self, cut: bool) {
         if !self.document.selection().is_empty() {
-            self.message = self.clipboard.copy(self.document.selected_text());
+            let message = self.clipboard.copy(self.document.selected_text());
+            self.inform(message);
             if cut {
                 self.document.insert("");
             }
@@ -466,10 +479,8 @@ impl App {
     pub fn enable_system_clipboard(&mut self) {
         if clipboard::remote_session() {
             self.clipboard = Clipboard::remote();
-            self.message = "SSH session · Internal clipboard · Use terminal paste".into();
         } else {
             self.clipboard = Clipboard::system();
-            self.message = "Ctrl+C/X/V uses system clipboard · Terminal paste supported".into();
         }
     }
 
@@ -490,13 +501,6 @@ impl App {
         self.search.refresh(&self.document);
         if let Some((index, wrapped)) = self.search.near(self.search.origin) {
             self.select_match(index, wrapped);
-        } else {
-            self.message = if self.search.query.text().is_empty() {
-                "Type a literal search query"
-            } else {
-                "No matches"
-            }
-            .into();
         }
     }
 
@@ -506,7 +510,7 @@ impl App {
             anchor: range.start,
             head: range.end,
         }) {
-            self.message = error.to_string();
+            self.set_message(error.to_string());
             return;
         }
         self.search.wrapped = wrapped;
@@ -515,25 +519,12 @@ impl App {
         self.anchor_screen_row = None;
         self.affinity = Affinity::Downstream;
         self.preferred_column = None;
-        self.message = format!(
-            "Match {}/{}{}",
-            index + 1,
-            self.search.matches.len(),
-            if wrapped { " · wrapped" } else { "" }
-        );
     }
 
     fn find_next(&mut self, backwards: bool) {
         self.search.refresh(&self.document);
         if let Some((index, wrapped)) = self.search.next(self.document.selection(), backwards) {
             self.select_match(index, wrapped);
-        } else {
-            self.message = if self.search.query.text().is_empty() {
-                "Type a literal search query"
-            } else {
-                "No matches"
-            }
-            .into();
         }
     }
 
@@ -555,7 +546,7 @@ impl App {
         let Some(index) = self.search.current(self.document.selection()) else {
             self.find_next(false);
             if !self.search.matches.is_empty() {
-                self.message = "Match selected; activate Replace again to change it".into();
+                self.inform("Match selected · Replace again to change it");
             }
             return;
         };
@@ -570,15 +561,14 @@ impl App {
                 if let Some((index, wrapped)) = self.search.near(next) {
                     self.select_match(index, wrapped);
                 }
-                self.message = if changed {
-                    "Replaced one match · Ctrl+Z after closing search to undo"
+                self.inform(if changed {
+                    "Replaced one · Esc then Ctrl+Z to undo"
                 } else {
                     "Match unchanged: replacement is identical"
-                }
-                .into();
+                });
                 self.follow_cursor = true;
             }
-            Err(error) => self.message = error.to_string(),
+            Err(error) => self.set_message(error.to_string()),
         }
     }
 
@@ -589,13 +579,13 @@ impl App {
             .replace_all(self.search.query.text(), self.search.replacement.text());
         self.search.refresh(&self.document);
         self.follow_cursor = true;
-        self.message = if count == 0 {
+        self.inform(if count == 0 {
             "No matches to replace".into()
         } else if identical {
             format!("{count} matches unchanged: replacement is identical")
         } else {
             format!("Replaced {count} matches · One undo step")
-        };
+        });
     }
 
     fn search_key(&mut self, key: KeyEvent) {
@@ -677,7 +667,10 @@ impl App {
                 KeyCode::Char('a') => input.select_all(),
                 KeyCode::Char('c' | 'x') => {
                     if !input.selection().is_empty() {
-                        self.message = self.clipboard.copy(input.selected_text());
+                        let message = self.clipboard.copy(input.selected_text());
+                        if !self.message_is_error {
+                            self.message = message;
+                        }
                         if key.code == KeyCode::Char('x') {
                             input.insert("");
                         }
@@ -685,7 +678,9 @@ impl App {
                 }
                 KeyCode::Char('v') => {
                     let (text, message) = self.clipboard.paste();
-                    self.message = message;
+                    if !self.message_is_error {
+                        self.message = message;
+                    }
                     if let Some(text) = text {
                         input.insert(&text);
                     }
@@ -840,11 +835,12 @@ impl App {
                 Ok(()) => {
                     self.document.mark_saved();
                     self.message = format!("Saved {}", safe_text(&file.path.display().to_string()));
+                    self.message_is_error = false;
                     self.overlay = Overlay::None;
                     self.should_exit = quit_after;
                 }
                 Err(error) => {
-                    self.message = error.to_string();
+                    self.set_message(error.to_string());
                     self.overlay = Overlay::None;
                 }
             }
@@ -882,6 +878,7 @@ impl App {
                             self.live &= self.markdown;
                             self.message =
                                 format!("Saved {}", safe_text(&file.path.display().to_string()));
+                            self.message_is_error = false;
                             self.file = Some(file);
                             self.document.mark_saved();
                             self.overlay = Overlay::None;
@@ -893,7 +890,7 @@ impl App {
                             );
                             self.layout_key = None;
                         }
-                        Err(error) => self.message = error.to_string(),
+                        Err(error) => self.set_message(error.to_string()),
                     }
                 }
                 KeyCode::Backspace => {
@@ -920,22 +917,24 @@ impl App {
 
     pub(crate) fn draw_with_cursor(&mut self, frame: &mut Frame, show_cursor: bool) {
         let area = frame.area();
-        if self.terminal_height != area.height || self.search_geometry.panel.width != area.width {
+        if self.terminal_height != area.height || self.terminal_width != area.width {
             self.field_drag = None;
         }
         self.terminal_height = area.height;
+        self.terminal_width = area.width;
+        if matches!(self.overlay, Overlay::Search { .. }) {
+            self.search.refresh(&self.document);
+        }
         if matches!(self.overlay, Overlay::Search { .. }) && !self.search_ready() {
             self.search_too_short();
         }
         let search_height = self.search_height(area.height);
-        if matches!(self.overlay, Overlay::Search { .. }) {
-            self.search.refresh(&self.document);
-        }
+        let body_top = body_top(area.height);
         self.viewport = Rect::new(
             area.x.saturating_add(1),
-            area.y.saturating_add(2),
+            area.y.saturating_add(body_top),
             area.width.saturating_sub(2),
-            area.height.saturating_sub(5 + search_height),
+            area.height.saturating_sub(body_top + 1 + search_height),
         );
         if self.parsed.snapshot.revision != self.document.revision() {
             self.parsed = Parsed::new(
@@ -981,13 +980,13 @@ impl App {
             |f| safe_text(&f.path.display().to_string()),
         );
         let title = format!(
-            " Marklane  {}{}  │ {} ",
+            " {}{} ",
             filename,
-            if self.document.is_dirty() { " *" } else { "" },
-            if self.live { "LIVE" } else { "SOURCE" }
+            if self.document.is_dirty() { " *" } else { "" }
         );
         frame.render_widget(
-            Paragraph::new(title).style(Style::default().add_modifier(Modifier::REVERSED)),
+            Paragraph::new(title)
+                .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
             Rect::new(area.x, area.y, area.width, area.height.min(1)),
         );
         let selection = self.document.selection().range();
@@ -1035,31 +1034,6 @@ impl App {
                 }
             }
         }
-        if area.height >= 3 {
-            let head = self.document.selection().head;
-            let line = self.document.text()[..head]
-                .graphemes(true)
-                .filter(|g| matches!(*g, "\r" | "\n" | "\r\n"))
-                .count()
-                + 1;
-            let line_start = self.document.text()[..head]
-                .rfind(['\n', '\r'])
-                .map_or(0, |i| i + 1);
-            let col = self.document.text()[line_start..head]
-                .graphemes(true)
-                .count()
-                + 1;
-            let status = format!(" Ln {line}, Col {col}  │ {}", safe_text(&self.message));
-            frame.render_widget(
-                Paragraph::new(status).style(Style::default().fg(Color::Cyan)),
-                Rect::new(area.x, area.bottom() - 2, area.width, 1),
-            );
-            frame.render_widget(
-                Paragraph::new(" F1 Help  ^N New  ^O Open  ^W Close  F7/F8 Tabs  ^Q Quit")
-                    .style(Style::default().add_modifier(Modifier::DIM)),
-                Rect::new(area.x, area.bottom() - 1, area.width, 1),
-            );
-        }
         if show_cursor
             && self.overlay == Overlay::None
             && height > 0
@@ -1074,30 +1048,86 @@ impl App {
         }
         if matches!(self.overlay, Overlay::Search { .. }) {
             self.draw_search(frame, search_height);
+        }
+        self.draw_footer(frame);
+        self.draw_overlay(frame);
+    }
+
+    fn search_count(&self) -> String {
+        if self.search.query.text().is_empty() {
+            String::new()
+        } else if self.search.matches.is_empty() {
+            "No matches".into()
+        } else if let Some(index) = self.search.current(self.document.selection()) {
+            format!("{}/{}", index + 1, self.search.matches.len())
         } else {
-            self.draw_overlay(frame);
+            format!("{} matches", self.search.matches.len())
         }
     }
 
-    fn search_height(&self, height: u16) -> u16 {
+    fn search_inline(&self) -> bool {
+        // Two margins, a bounded field with at least 24 input cells, a count,
+        // two gaps, and the full Previous/Next/Close labels must all fit.
+        let count = UnicodeWidthStr::width(self.search_count().as_str()).max(10);
+        usize::from(self.terminal_width) >= 2 + 8 + 24 + count + 2 + 21
+    }
+
+    fn search_rows(&self) -> u16 {
         match self.overlay {
             Overlay::Search { replace } => {
-                (if replace { 6 } else { 5 }).min(height.saturating_sub(6))
+                1 + u16::from(replace) + u16::from(!self.search_inline())
             }
             _ => 0,
         }
     }
 
+    fn search_height(&self, height: u16) -> u16 {
+        self.search_rows()
+            .min(height.saturating_sub(body_top(height) + 1))
+    }
+
     fn search_ready(&self) -> bool {
-        match self.overlay {
-            Overlay::Search { replace } => self.terminal_height >= if replace { 12 } else { 11 },
-            _ => true,
-        }
+        !matches!(self.overlay, Overlay::Search { .. })
+            || (self.terminal_width >= 11
+                && self.terminal_height >= body_top(self.terminal_height) + self.search_rows() + 2)
     }
 
     fn search_too_short(&mut self) {
         self.search.focus = Focus::Query;
-        self.message = "Search needs a taller terminal · Resize or Esc to close".into();
+    }
+
+    fn draw_search_field(&mut self, frame: &mut Frame, area: Rect, focus: Focus) {
+        let focused = self.search.focus == focus;
+        let frozen_start = self
+            .field_drag
+            .as_ref()
+            .filter(|drag| drag.map.focus == focus)
+            .map(|drag| drag.map.start);
+        let label = match focus {
+            Focus::Query => "Find: [",
+            Focus::Replacement => "With: [",
+        };
+        let mut map = draw_field(
+            frame,
+            Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+            label,
+            self.search.input(focus),
+            focus,
+            focused,
+            frozen_start,
+        );
+        if area.width > 0 {
+            frame.render_widget(
+                Paragraph::new("]").style(if focused {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().add_modifier(Modifier::DIM)
+                }),
+                Rect::new(area.right() - 1, area.y, 1, 1),
+            );
+        }
+        map.area = area;
+        self.search_geometry.fields.push(map);
     }
 
     fn draw_search(&mut self, frame: &mut Frame, height: u16) {
@@ -1109,112 +1139,201 @@ impl App {
             return;
         }
         let area = frame.area();
-        let panel = Rect::new(area.x, area.bottom() - 2 - height, area.width, height);
+        let panel = Rect::new(area.x, area.bottom() - 1 - height, area.width, height);
         self.search_geometry.panel = panel;
         frame.render_widget(Clear, panel);
-        frame.render_widget(
-            Block::default().borders(Borders::TOP).title(if replace {
-                " Find / Replace · literal · case sensitive "
-            } else {
-                " Find · literal · case sensitive "
-            }),
-            panel,
-        );
-        if panel.height < 2 {
-            return;
-        }
-        let row = |offset: u16| Rect::new(panel.x, panel.y + offset, panel.width, 1);
+        let row = |offset: u16| {
+            Rect::new(
+                panel.x + 1,
+                panel.y + offset,
+                panel.width.saturating_sub(2),
+                1,
+            )
+        };
         if !self.search_ready() {
-            self.search_geometry.buttons =
-                draw_search_buttons(frame, row(1), &[(SearchAction::Close, true)], true);
-            if panel.height > 2 {
-                frame.render_widget(
-                    Paragraph::new("Resize taller to search")
-                        .style(Style::default().fg(Color::Yellow)),
-                    row(2),
-                );
-            }
-            return;
-        }
-        for (focus, offset, label) in [(Focus::Query, 1, "Find "), (Focus::Replacement, 2, "With ")]
-        {
-            if focus == Focus::Replacement && !replace {
-                continue;
-            }
-            let frozen_start = self
-                .field_drag
-                .as_ref()
-                .filter(|drag| drag.map.focus == focus)
-                .map(|drag| drag.map.start);
-            let map = draw_field(
+            self.search_geometry.buttons = draw_search_buttons(
                 frame,
-                row(offset),
-                label,
-                self.search.input(focus),
-                focus,
-                self.search.focus == focus,
-                frozen_start,
+                Rect::new(panel.x, panel.y, panel.width, 1),
+                &[(SearchAction::Close, true)],
             );
-            self.search_geometry.fields.push(map);
+            return;
         }
         let has_matches = !self.search.matches.is_empty();
-        let mut actions = vec![
+        let navigation = [
             (SearchAction::Previous, has_matches),
             (SearchAction::Next, has_matches),
+            (SearchAction::Close, true),
         ];
-        if replace {
-            actions.push((
+        let replacements = [
+            (
                 SearchAction::Replace,
                 self.search.current(self.document.selection()).is_some(),
-            ));
-            actions.push((SearchAction::ReplaceAll, has_matches));
-        }
-        actions.push((SearchAction::Close, true));
-        self.search_geometry.buttons =
-            draw_search_buttons(frame, row(if replace { 3 } else { 2 }), &actions, false);
-        let counts = if self.search.query.text().is_empty() {
-            "Type to search".into()
-        } else if !has_matches {
-            "No matches".into()
-        } else if let Some(index) = self.search.current(self.document.selection()) {
-            format!(
-                "{}/{} matches{}",
-                index + 1,
-                self.search.matches.len(),
-                if self.search.wrapped {
-                    " · wrapped"
-                } else {
-                    ""
-                }
-            )
-        } else {
-            format!("{} matches", self.search.matches.len())
-        };
-        frame.render_widget(
-            Paragraph::new(counts).style(Style::default().fg(Color::Cyan)),
-            row(if replace { 4 } else { 3 }),
-        );
-        let hint = if replace && self.search.focus == Focus::Replacement {
-            if panel.width < 24 {
-                "Enter: one · Tab: Find"
-            } else {
-                "Enter: replace + next · Tab/Up: Find · Alt+R: one · Alt+A: all"
+            ),
+            (SearchAction::ReplaceAll, has_matches),
+        ];
+        let counts = self.search_count();
+        let count_width = UnicodeWidthStr::width(counts.as_str()).max(10) as u16;
+        let query_row = row(0);
+        if self.search_inline() {
+            let field_width = query_row.width - count_width - 23;
+            self.draw_search_field(
+                frame,
+                Rect::new(query_row.x, query_row.y, field_width, 1),
+                Focus::Query,
+            );
+            frame.render_widget(
+                Paragraph::new(counts).style(Style::default().add_modifier(Modifier::DIM)),
+                Rect::new(query_row.x + field_width + 1, query_row.y, count_width, 1),
+            );
+            self.search_geometry.buttons = draw_search_buttons(
+                frame,
+                Rect::new(query_row.right() - 21, query_row.y, 21, 1),
+                &navigation,
+            );
+            if replace {
+                let with_row = row(1);
+                self.draw_search_field(
+                    frame,
+                    Rect::new(with_row.x, with_row.y, field_width, 1),
+                    Focus::Replacement,
+                );
+                self.search_geometry.buttons.extend(draw_search_buttons(
+                    frame,
+                    Rect::new(with_row.right() - 25, with_row.y, 25, 1),
+                    &replacements,
+                ));
             }
-        } else if replace {
-            "Enter: next · Shift+Enter: previous · Tab/Down: With · Alt+R/A: one/all"
         } else {
-            "Enter: next · Shift+Enter: previous · Ctrl+R: replace · Esc: close"
+            // A narrow dock puts actions on their own row. Keep at least eight
+            // input cells before giving the count its own horizontal space.
+            let count_fits = query_row.width >= 8 + 8 + 1 + count_width;
+            let field_width = if count_fits {
+                query_row.width - count_width - 1
+            } else {
+                query_row.width
+            };
+            self.draw_search_field(
+                frame,
+                Rect::new(query_row.x, query_row.y, field_width, 1),
+                Focus::Query,
+            );
+            if count_fits {
+                frame.render_widget(
+                    Paragraph::new(counts.as_str())
+                        .style(Style::default().add_modifier(Modifier::DIM)),
+                    Rect::new(query_row.right() - count_width, query_row.y, count_width, 1),
+                );
+            }
+            if replace {
+                self.draw_search_field(frame, row(1), Focus::Replacement);
+            }
+            let mut actions = navigation[..2].to_vec();
+            if replace {
+                actions.extend(replacements);
+            }
+            actions.push((SearchAction::Close, true));
+            self.search_geometry.buttons =
+                draw_search_buttons(frame, row(if replace { 2 } else { 1 }), &actions);
+        }
+    }
+
+    fn draw_footer(&self, frame: &mut Frame) {
+        let area = frame.area();
+        if area.height < 2 || area.width == 0 {
+            return;
+        }
+        let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+        let head = self.document.selection().head;
+        let line = self.document.text()[..head]
+            .graphemes(true)
+            .filter(|g| matches!(*g, "\r" | "\n" | "\r\n"))
+            .count()
+            + 1;
+        let line_start = self.document.text()[..head]
+            .rfind(['\n', '\r'])
+            .map_or(0, |i| i + 1);
+        let col = self.document.text()[line_start..head]
+            .graphemes(true)
+            .count()
+            + 1;
+        let search = matches!(self.overlay, Overlay::Search { .. });
+        let guidance = match self.overlay {
+            Overlay::Search { .. } if !self.search_ready() => "Resize to search · Esc Close",
+            Overlay::Search { replace: true } if self.search.focus == Focus::Replacement => {
+                if area.width < 60 {
+                    "Enter: replace · Tab Find · Esc Close"
+                } else {
+                    "Enter: replace + next · Tab Find · Esc Close"
+                }
+            }
+            Overlay::Search { replace: true } => "Enter Next · Tab With · Esc Close",
+            Overlay::Search { replace: false } => "Enter Next · ^R Replace · Esc Close",
+            Overlay::Help => "Esc Close",
+            Overlay::SaveAs { .. } => "Enter Save · Esc Cancel",
+            Overlay::Quit => "Y Save · N Discard · Esc Cancel",
+            Overlay::None if area.width < 60 => "F1 Help",
+            Overlay::None => "^S Save · ^F Find · F1 Help",
+        };
+        let mut left = if !self.message.is_empty() {
+            safe_text(&self.message)
+        } else if search
+            && self.search_ready()
+            && !self.search_inline()
+            && area.width.saturating_sub(2)
+                < 8 + 8 + 1 + UnicodeWidthStr::width(self.search_count().as_str()).max(10) as u16
+            && !self.search.query.text().is_empty()
+        {
+            format!("{} · Esc Close", self.search_count())
+        } else {
+            guidance.into()
+        };
+        if search && self.search.wrapped && self.message.is_empty() {
+            left = format!("Wrapped · {left}");
+        }
+        let right = format!(
+            "{}Ln {line}, Col {col}",
+            if search {
+                ""
+            } else if self.live {
+                "Live · "
+            } else {
+                "Source · "
+            },
+        );
+        let right_width = UnicodeWidthStr::width(right.as_str()) as u16;
+        let left_width = UnicodeWidthStr::width(left.as_str());
+        let show_position = !self.message_is_error
+            && usize::from(area.width) >= left_width + usize::from(right_width) + 4;
+        let style = if self.message_is_error {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
         };
         frame.render_widget(
-            Paragraph::new(hint).style(Style::default().add_modifier(Modifier::DIM)),
-            row(if replace { 5 } else { 4 }),
+            Paragraph::new(format!(" {left}")).style(style),
+            Rect::new(
+                footer.x,
+                footer.y,
+                if show_position {
+                    footer.width - right_width - 2
+                } else {
+                    footer.width
+                },
+                1,
+            ),
         );
+        if show_position {
+            frame.render_widget(
+                Paragraph::new(right).style(Style::default().add_modifier(Modifier::DIM)),
+                Rect::new(footer.right() - right_width - 1, footer.y, right_width, 1),
+            );
+        }
     }
 
     fn draw_overlay(&self, frame: &mut Frame) {
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
-            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind Enter: next; With Enter: replace one. Alt+R/A: one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nLive view reveals active source. Small UTF-8 files only.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
+            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind is literal and case sensitive. Enter: next; With Enter: one.\nAlt+R/A: replace one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nLive view reveals active source. Small UTF-8 files only.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
             Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
             Overlay::SaveAs { path, .. } => (" Save As · new filename ", format!("{}▏\n\nEnter: Save  ·  Esc: Cancel\nExisting files are protected; enter a new path.\n\n{}", safe_text(path), safe_text(&self.message))),
         };
@@ -1247,30 +1366,37 @@ impl App {
     }
 }
 
+fn body_top(height: u16) -> u16 {
+    if height >= 10 { 2 } else { 1 }
+}
+
 fn draw_search_buttons(
     frame: &mut Frame,
     area: Rect,
     actions: &[(SearchAction, bool)],
-    compact_message: bool,
 ) -> Vec<SearchButton> {
-    let label = |action, compact| match (action, compact) {
-        (SearchAction::Previous, false) => "[Prev]",
-        (SearchAction::Previous, true) => "[<]",
-        (SearchAction::Next, false) => "[Next]",
-        (SearchAction::Next, true) => "[>]",
-        (SearchAction::Replace, false) => "[Replace]",
-        (SearchAction::Replace, true) => "[One]",
-        (SearchAction::ReplaceAll, false) => "[Replace all]",
-        (SearchAction::ReplaceAll, true) => "[All]",
-        (SearchAction::Close, false) => "[Close]",
-        (SearchAction::Close, true) => "[x]",
+    let label = |action, compact| match action {
+        SearchAction::Previous if compact < 2 => "[Prev]",
+        SearchAction::Previous => "[<]",
+        SearchAction::Next if compact < 2 => "[Next]",
+        SearchAction::Next => "[>]",
+        SearchAction::Replace if compact == 0 => "[Replace 1]",
+        SearchAction::Replace => "[One]",
+        SearchAction::ReplaceAll if compact == 0 => "[Replace all]",
+        SearchAction::ReplaceAll => "[All]",
+        SearchAction::Close if compact < 2 => "[Close]",
+        SearchAction::Close => "[x]",
     };
-    let required = actions
-        .iter()
-        .map(|(action, _)| label(*action, false).len() + 1)
-        .sum::<usize>()
-        .saturating_sub(1);
-    let compact = required > usize::from(area.width);
+    let compact = (0..=2)
+        .find(|compact| {
+            actions
+                .iter()
+                .map(|(action, _)| label(*action, *compact).len() + 1)
+                .sum::<usize>()
+                .saturating_sub(1)
+                <= usize::from(area.width)
+        })
+        .unwrap_or(2);
     let mut buttons = Vec::new();
     let mut column = 0;
     for (action, enabled) in actions {
@@ -1279,7 +1405,11 @@ fn draw_search_buttons(
             text = "x";
         }
         let width = text.len();
-        let reserve = if *action == SearchAction::Close {
+        let reserve = if *action == SearchAction::Close
+            || !actions
+                .iter()
+                .any(|(action, _)| *action == SearchAction::Close)
+        {
             0
         } else {
             label(SearchAction::Close, compact).len() + 1
@@ -1289,9 +1419,7 @@ fn draw_search_buttons(
         }
         let rect = Rect::new(area.x + column as u16, area.y, width as u16, 1);
         let style = if *enabled {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::UNDERLINED)
+            Style::default().add_modifier(Modifier::UNDERLINED)
         } else {
             Style::default()
                 .fg(Color::DarkGray)
@@ -1304,17 +1432,6 @@ fn draw_search_buttons(
             enabled: *enabled,
         });
         column += width + 1;
-    }
-    if compact_message && column < usize::from(area.width) {
-        frame.render_widget(
-            Paragraph::new("Resize taller").style(Style::default().fg(Color::Yellow)),
-            Rect::new(
-                area.x + column as u16,
-                area.y,
-                area.width - column as u16,
-                1,
-            ),
-        );
     }
     buttons
 }
@@ -1864,6 +1981,144 @@ mod tests {
     }
 
     #[test]
+    fn compact_search_keeps_usable_fields_one_count_and_more_document_rows() {
+        for (width, height, find_rows, replace_rows, body_rows) in
+            [(80, 24, 1, 2, 21), (40, 12, 2, 3, 9)]
+        {
+            let mut app = App::new("cat cat cat".into(), None, true);
+            let idle = crate::simulation::snapshot(&mut app, width, height).unwrap();
+            assert_eq!(app.viewport.height, body_rows);
+            assert!(!idle.contains("clipboard"));
+            search(&mut app, "cat", false);
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            let selected = app.document.selection();
+            let snapshot = crate::simulation::snapshot(&mut app, width, height).unwrap();
+            assert_eq!(snapshot.matches("2/3").count(), 1);
+            assert_eq!(app.search_geometry.panel.height, find_rows);
+            assert_eq!(app.viewport.height, body_rows - find_rows);
+            assert!(!snapshot.contains("F7/F8"));
+            key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+            let mut terminal = draw(&mut app, width, height);
+            assert_eq!(app.search.query.text(), "cat");
+            assert_eq!(app.document.selection(), selected);
+            assert_eq!(app.search_geometry.panel.height, replace_rows);
+            assert_eq!(app.viewport.height, body_rows - replace_rows);
+            assert_eq!(button(&app, SearchAction::Previous).area.width, 6);
+            assert_eq!(button(&app, SearchAction::Next).area.width, 6);
+            assert_eq!(button(&app, SearchAction::Close).area.width, 7);
+            for field in &app.search_geometry.fields {
+                assert_eq!(
+                    terminal.backend().buffer()[(field.area.x + 6, field.area.y)].symbol(),
+                    "["
+                );
+                assert_eq!(
+                    terminal.backend().buffer()[(field.area.right() - 1, field.area.y)].symbol(),
+                    "]"
+                );
+                assert!(field.area.width >= 16);
+            }
+            let field = app.search_geometry.fields[0].area;
+            assert_eq!(
+                terminal.backend().buffer()[(field.x, field.y)].fg,
+                Color::Cyan
+            );
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(contains(field, cursor.x, cursor.y));
+            for button in &app.search_geometry.buttons {
+                assert!(button.area.right() <= width);
+                for field in &app.search_geometry.fields {
+                    assert!(button.area.intersection(field.area).is_empty());
+                }
+            }
+            click_button(&mut app, SearchAction::Previous);
+            assert_eq!(app.document.selection().range(), 0..3);
+            key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+            app.handle_event(Event::Paste("dog".into()));
+            draw(&mut app, width, height);
+            let snapshot = crate::simulation::snapshot(&mut app, width, height).unwrap();
+            assert!(
+                snapshot
+                    .lines()
+                    .nth(usize::from(height - 1))
+                    .unwrap()
+                    .contains("Esc Close")
+            );
+            click_button(&mut app, SearchAction::Replace);
+            assert_eq!(app.document.text(), "dog cat cat");
+            draw(&mut app, width, height);
+            click_button(&mut app, SearchAction::Close);
+            key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+            assert_eq!(app.document.text(), "cat cat cat");
+            assert!(!app.document.is_dirty());
+        }
+    }
+
+    #[test]
+    fn search_layout_breakpoint_preserves_fields_and_has_no_overlapping_targets() {
+        let mut app = App::new("cat cat".into(), None, true);
+        search(&mut app, "cat", true);
+        for width in 0..=100 {
+            for height in [0, 1, 2, 3, 4, 5, 8, 12, 24] {
+                let mut terminal = draw(&mut app, width, height);
+                let geometry = &app.search_geometry;
+                for button in &geometry.buttons {
+                    assert!(button.area.right() <= width && button.area.bottom() <= height);
+                }
+                if app.search_ready() {
+                    assert_eq!(geometry.fields.len(), 2);
+                    for field in &geometry.fields {
+                        assert!(field.area.width >= 9);
+                        assert!(field.area.right() <= width && field.area.bottom() < height);
+                        for button in &geometry.buttons {
+                            assert!(field.area.intersection(button.area).is_empty());
+                        }
+                    }
+                    assert!(app.viewport.height >= 1);
+                    let cursor = terminal.get_cursor_position().unwrap();
+                    assert!(contains(geometry.fields[0].area, cursor.x, cursor.y));
+                } else {
+                    assert!(geometry.fields.is_empty());
+                    assert!(
+                        geometry
+                            .buttons
+                            .iter()
+                            .all(|button| button.action == SearchAction::Close)
+                    );
+                }
+            }
+        }
+        draw(&mut app, 66, 24);
+        assert_eq!(app.search_geometry.panel.height, 3);
+        draw(&mut app, 67, 24);
+        assert_eq!(app.search_geometry.panel.height, 2);
+        assert_eq!(app.search_geometry.fields[0].area.width - 8, 24);
+    }
+
+    #[test]
+    fn file_errors_survive_editing_search_and_redraw_until_dismissed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("draft.md");
+        std::fs::write(&path, "cat cat").unwrap();
+        let mut app = App::open(Some(path.clone())).unwrap();
+        app.document.insert("new ");
+        std::fs::write(&path, "external edit").unwrap();
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let error = app.message.clone();
+        assert!(app.message_is_error && error.contains("changed"));
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        search(&mut app, "cat", false);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let terminal = draw(&mut app, 80, 24);
+        assert_eq!(app.message, error);
+        assert_eq!(terminal.backend().buffer()[(1, 23)].fg, Color::Yellow);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.message, error);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.message.is_empty() && !app.message_is_error);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "external edit");
+    }
+
+    #[test]
     fn native_clipboard_commands_copy_source_and_paste_as_one_literal_edit() {
         let source = "**copy**\r\nrest";
         let mut app = App::new(source.into(), None, true);
@@ -1958,7 +2213,7 @@ mod tests {
         assert_eq!(app.document.selection().range(), matches[0]);
         let snapshot = crate::simulation::snapshot(&mut app, 34, 16).unwrap();
         assert!(snapshot.contains("[label](hidden/path)"));
-        assert!(snapshot.contains("1/2 matches"));
+        assert!(snapshot.contains("1/2"));
         assert!(
             app.caret_position().0 >= app.scroll
                 && app.caret_position().0 < app.scroll + usize::from(app.viewport.height)
@@ -2109,9 +2364,9 @@ mod tests {
         assert_eq!(app.search.focus, Focus::Replacement);
         let narrow = crate::simulation::snapshot(&mut app, 12, 16).unwrap();
         assert!(narrow.contains("[x]"));
-        app.handle_event(Event::Resize(80, 8));
-        let short = crate::simulation::snapshot(&mut app, 80, 8).unwrap();
-        assert!(short.contains("Resize taller"));
+        app.handle_event(Event::Resize(80, 4));
+        let short = crate::simulation::snapshot(&mut app, 80, 4).unwrap();
+        assert!(short.contains("Resize to search"));
         assert_eq!(app.search.focus, Focus::Query);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -2474,7 +2729,7 @@ mod tests {
         );
         assert_eq!(app.document.text(), "cat cat");
         assert_eq!(app.document.selection(), selected);
-        app.handle_event(Event::Resize(80, 8));
+        app.handle_event(Event::Resize(80, 4));
         pointer(
             &mut app,
             MouseEventKind::Down(MouseButton::Left),
@@ -2482,7 +2737,7 @@ mod tests {
             all.area.y,
             KeyModifiers::NONE,
         );
-        draw(&mut app, 80, 8);
+        draw(&mut app, 80, 4);
         assert!(app.search_geometry.fields.is_empty());
         assert!(
             app.search_geometry
@@ -2492,7 +2747,7 @@ mod tests {
         );
         key(&mut app, KeyCode::Char('a'), KeyModifiers::ALT);
         assert_eq!(app.document.text(), "cat cat");
-        draw(&mut app, 80, 8);
+        draw(&mut app, 80, 4);
         let close = button(&app, SearchAction::Close);
         click_button(&mut app, SearchAction::Close);
         key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
