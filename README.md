@@ -10,6 +10,7 @@ The central idea: make a Markdown document pleasant to work in directly, with de
 - [Technical plan and milestones](docs/technical-plan.md): proposed Rust stack, source mapping, file safety, compatibility, and the first prototype.
 - [Implementation coordination](docs/coordination.md): current agent ownership, shared interfaces, and prototype acceptance criteria.
 - [Prototype checks](docs/prototype-checks.md): headless verification and a short manual terminal checklist.
+- [Visual testing and UI polish](docs/visual-testing-plan.md): screenshot feedback, the Ghostty keyboard finding, and the proposed reusable test loop.
 
 ## Try the prototype
 
