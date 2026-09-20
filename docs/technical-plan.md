@@ -1,6 +1,6 @@
 # Technical plan and milestones
 
-Planning draft · September 19, 2026 · Candidate architecture, not implemented code.
+Architecture and roadmap · September 19–20, 2026. The first Rust prototype is implemented; this document also describes later work. See [coordination](coordination.md) for the current scope and [prototype checks](prototype-checks.md#verification-record) for observed results.
 
 ## Recommended approach
 
@@ -41,6 +41,12 @@ An edit transaction records replacements, selection before/after, and a revision
 Task glyphs are semantic hit targets in the projection, separate from item-text insertion targets. Store the exact source range of the checkbox state character. A click dispatches `ToggleTask` against the current revision, edits that marker, and leaves the caret anchored; it does not move the caret to the marker and simulate typing. Revalidate the target if its parse revision is stale.
 
 `Enter` dispatches a list-continuation command only when the caret is in an editable list item. Obtain list/container context from the parser plus original source slices, preserve the original marker/indentation, increment explicit numbers, and make new tasks unchecked. Handle splitting, empty-item exit, and nested outdent as one transaction each. Literal code, terminal paste events, and the explicit literal-newline command bypass this helper. Test source and live views against the same command layer.
+
+Leaving an outer list must also end that list in the source. Add a separating blank line when immediately typed prose would otherwise become a lazy continuation of the preceding item; retain the surrounding quote prefix for a quoted list. Subsequent Enter presses on a blank line must not inherit the previous item's range. Verify complete input sequences and reopening the resulting text, not just isolated Enter commands.
+
+Find/replace starts with case-sensitive literal source search. A result must have valid grapheme boundaries so selecting or replacing it uses the same position contract as ordinary editing. Search includes concealed Markdown destinations and delimiters; the projection reveals the selected range. Replace All matches the original source once, maps selection through those edits, and records one transaction. Empty queries and identical replacements must not create artificial edits or history entries.
+
+Apply match colors to the final visible glyph styles, using source-range overlap and the current search revision. All matches share a readable background; the active result has stronger contrast and additional emphasis. This decoration must not change projection geometry, source selection, or document revision. Search fields and buttons export their actual rendered cell bounds for pointer handling, with grapheme-aware field maps and stale-geometry invalidation on resize or input changes. Keep field drags anchored to their starting layout so horizontal scrolling cannot move the selection beneath the pointer.
 
 Separate modules for `document`, `editing`, `markdown`, `projection`, `terminal`, `workspace`, `files`, and `theme`. A headless command runner should exercise editing without opening a real terminal.
 
@@ -89,6 +95,8 @@ Terminal replies and keyboard input share a stream. Give protocol queries bounde
 Enhanced input can distinguish otherwise ambiguous keys. Essential commands still need legacy-compatible alternatives because the terminal, OS, or multiplexer may capture shortcuts. [Keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/)
 
 Local clipboard access and remote clipboard access are different adapters. Prefer the local system clipboard when actually local. Support terminal-delivered paste and optional OSC 52 writes over remote sessions, with an explicit internal-copy fallback. Do not assume clipboard reads are available or repeatedly query them without a user paste action.
+
+The implemented clipboard adapter uses `arboard` with image features disabled, behind a lazy serialized worker. Native waits and shutdown are bounded. Internal copies survive native failures, which switch the session to a reported fallback. An empty or nontext clipboard is a no-op, distinct from an unavailable backend. The library's Linux clipboard ownership lasts with its handle, so clipboard lifetime and shutdown matter; copying after process exit also depends on the desktop's clipboard manager. [arboard clipboard behavior](https://docs.rs/arboard/3.6.1/arboard/struct.Clipboard.html), [error distinctions](https://docs.rs/arboard/3.6.1/arboard/enum.Error.html)
 
 Test actual capabilities through tmux/SSH rather than trusting `$TERM` alone. Native terminal mouse selection should remain accessible through the terminal's bypass modifier or an editor mouse-capture toggle.
 
@@ -160,13 +168,15 @@ Direct table-cell editing, section-based change review, context-copy commands, s
 
 ## Verification plan
 
-These are future implementation checks, not tests run during this planning session.
+This section defines the intended verification coverage. Results for the implemented first prototype are recorded separately in [prototype checks](prototype-checks.md#verification-record); later-stage targets below are not claims about the current build.
+
+**Implementation constraint:** agents cannot use Computer Use to operate terminal apps in this environment. Run builds and headless tests through authorized shell tools. Build a deterministic event/render harness around the real application code, using Ratatui's test backend or an in-memory cell grid; reserve essential real-terminal visual verification for the user. The [coordination note](coordination.md#verification-without-terminal-app-automation) defines the current split.
 
 - **Document fidelity:** no-op load/save and edit/undo/save over BOM, CRLF, trailing spaces, mixed endings, tabs, and no-final-newline fixtures.
 - **Mapping invariants:** every hit yields a valid source boundary; visible literal spans map back correctly; concealed syntax has explicit affinity. Property tests cover random edits and undo restoration.
 - **Semantic fixtures:** nested emphasis, delimiter changes, reference links, entities, escapes, code fences, nested containers, tables, and incomplete input. Preserve unsupported syntax visibly.
 - **Unicode:** combining marks, CJK, emoji sequences, wide characters at wrap edges, and tabs. Test widths against the actual terminals; a width library alone is not proof of agreement. Assess bidi/IME behavior explicitly and document limitations.
-- **Interaction traces:** real terminal sessions for select/copy/paste, mouse drag, resize, key interception, bracketed paste, and graceful exit. Cell snapshots alone cannot validate native clipboard or font rendering.
+- **Interaction traces:** synthetic key/mouse/resize/paste sequences through the production input/command path, rendered to an in-memory terminal backend. Assert source edits, selection, cursor location, and hit maps alongside focused cell/style snapshots. User-run real-terminal sessions then check key interception, paste transport, font rendering, and graceful exit; simulated results do not establish those properties.
 - **Interactive constructs:** checkbox glyph versus label hit testing, exact marker-only toggles, one-step undo, stale task targets, list continuation in the middle/end of an item, incremented numbers, checked-to-unchecked continuation, empty nested items, quoted lists, code exclusions, and literal paste/newline.
 - **File failure scenarios:** permission failure, disk-change-before-save, replacement/deletion, repeated watcher events, recovery after interruption, and safe resolution of stale patches.
 - **Performance:** record input-to-frame CPU time, startup, parsing/layout, memory, and bytes emitted using 10 KB, 100 KB, 1 MB, and larger pathological fixtures. Include an enormous single paragraph and table.
@@ -174,3 +184,5 @@ These are future implementation checks, not tests run during this planning sessi
 Provisional targets on a documented local reference machine: warm edit-to-frame processing at p95 under 16 ms for a 100 KB document, ordinary small-file startup under 100 ms, and no UI stall over 50 ms from background parsing on 1 MB documents. These are goals to measure, not current results or promises about SSH latency. Large-file source fallback is preferable to a frozen rich view.
 
 Compatibility should be tracked by observed behavior, not logos. Cover a plain baseline profile; a modern macOS terminal; Kitty for extension experiments; a Linux terminal; Windows Terminal when Windows support is in scope; and at least one SSH/tmux path. Record clipboard, keys, Unicode widths, colors, and recovery separately.
+
+Prepare a concise manual checklist only after the build is runnable. Report automated harness results separately from user-observed terminal results, and leave untested combinations explicitly unverified.

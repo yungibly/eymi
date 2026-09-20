@@ -58,6 +58,8 @@ The user specifically prioritized clickable checkboxes and automatic list contin
 
 Click the checkbox glyph to toggle completion immediately. Click the item text to enter source editing at that position. Do not make the whole row a toggle: that would interfere with selecting and editing its words.
 
+User feedback from the first manual test: the single-cell checkbox target is too small. Extend initiating checkbox clicks by one cell on either side where space allows, keeping label characters, neighboring controls, and other rows outside that padding. Padding affects pointer activation only; keyboard movement and drag selection retain precise text hit testing.
+
 A checkbox click changes only the existing task marker, for example `- [ ] Ship the plan` to `- [x] Ship the plan`. Preserve indentation, bullet style, spacing, and the task text. Leave the text caret and scroll anchor where they were; update only the task's presentation. Unchecking accepts existing uppercase `X` as checked input. Every toggle is one undoable transaction, including restoring the caret/selection state.
 
 Provide the same action through a **Toggle task** command for keyboard-only use. Mouse-capable terminals are the enhanced path; editing or toggling a task never requires a mouse. In source view, literal marker editing remains available.
@@ -76,6 +78,8 @@ Provide the same action through a **Toggle task** command for keyboard-only use.
 Preserve the item's indentation and container context. In the middle of an item, split at the caret and carry trailing text into the new item. Do not automatically renumber the rest of the file. Start with incrementing the current explicit number; a configurable repeated-`1.` style can follow later.
 
 Enter on an empty top-level item removes its marker and returns to ordinary prose. In a nested empty item, leave one list level at a time; preserve a containing quote when leaving a quoted list. Tab/Shift+Tab can indent/outdent a list item when the context is unambiguous, with equivalent commands for terminals where those bindings are unavailable. Indent/outdent can follow the initial continuation behavior.
+
+Once the outer list has been exited, subsequent Enter presses must keep inserting ordinary newlines. Do not resurrect the previous list merely because the parser's previous item range ends at the current blank line. Test the complete repeated-Enter sequence, including later prose and undo/redo, rather than only isolated commands.
 
 The helper is disabled inside fenced/indented code and other literal contexts. Pasting several lines must insert those lines unchanged rather than replay Enter helpers. Provide a **Literal newline** command and an enhanced Shift+Enter binding where available. Enter's insertion and helper changes form one undo step. The same Markdown editing commands work in live and source views.
 
@@ -135,7 +139,7 @@ These are proposed defaults, subject to testing in actual terminals. Each import
 | Select all | Ctrl+A |
 | Extend selection | Shift+arrows; mouse drag |
 | Find / next match | Ctrl+F / F3 |
-| Replace | Find panel action and palette |
+| Replace | Ctrl+R; Find panel action and future palette |
 | Toggle live/source view | Ctrl+E and F6 |
 | Previous / next tab | Ctrl+PageUp / Ctrl+PageDown; F7 / F8 alternatives |
 | Command palette / help | F2 / F1 |
@@ -144,6 +148,12 @@ These are proposed defaults, subject to testing in actual terminals. Each import
 | Dismiss popup or selection | Escape; it never quits the editor |
 
 Provide a compact contextual footer with a few useful actions. A menu and command search prevent the shortcut list from becoming homework. Formatting a selection is a source edit; without a selection, a formatting command can insert paired markers with the caret between them, as one undoable transaction.
+
+Find searches the underlying source, including normally hidden Markdown. Selecting a result reveals its syntax and scrolls it into view. The first implementation uses case-sensitive literal matching, with match counts, forward/backward wraparound, replace-current, and Replace All as one undo step. Empty search fields have no matches. Regex and case-folding modes can follow; the initial controls should say what they do. Search input must remain separate from document editing, and replacement must use current source ranges after every edit.
+
+While Find is open, mark every visible match with a quiet, readable background and distinguish the current match through stronger contrast plus bold/underline. Keep the surrounding document stable; hidden source is revealed when its result is selected. Scrolling over the document lets the user inspect other highlighted results without changing the active one; navigation brings the current result back into view. Close Find to clear the extra decoration while retaining the ordinary text selection.
+
+Search fields and controls must work with the mouse when they look interactive. Field clicks place a caret; Shift-click and drag select text. Previous, Next, Replace, Replace All, and Close buttons act on one click. Tab / Shift+Tab switches directly between Find and With, selecting the destination field's existing text; action buttons do not interrupt that loop. Enter in Find navigates results, while Enter in With replaces the current result and advances. Show that difference next to the focused field. Replace All requires an explicit button or shortcut. Short or narrow layouts must not retain clickable targets for controls that are no longer visible.
 
 Do not assign essential distinct actions to Ctrl+I versus Tab, Ctrl+M versus Enter, or Ctrl+H versus Backspace in legacy input. Enhanced keyboard protocols can distinguish more combinations, but should be an improvement rather than an entry requirement. [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/)
 
