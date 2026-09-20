@@ -77,6 +77,8 @@ Do not add a sidebar, outline, new themes, or more workspace features to this fi
 
 ## Coordination
 
-The current three-agent pass is read-only: A investigates terminal input, B reviews the UI against the screenshots, and the forward implementer evaluates existing harnesses. The coordinator consolidates the decision and owns this document. No installs or runtime edits are part of that research assignment.
+Following the user's agreement, the coordinator installed the official macOS arm64 `0.1.0-beta.5` binary under ignored `target/tools/`, verified the release SHA-256, and checked its version/help. [The bootstrap recipe](../tools/tui-test/README.md) reproduces this project-local setup without Homebrew or a Cargo dependency. The runner trial and runtime/UI changes remain the next implementation work.
+
+The completed three-agent research pass was read-only: A investigated terminal input, B reviewed the UI against the screenshots, and the forward implementer evaluated existing harnesses. The coordinator consolidated the decision and owns this document. No installs or runtime edits occurred during that research assignment; the local installation above followed it.
 
 If implementation follows, isolate input fixes, test infrastructure, and UI changes in separate worktrees from a recorded baseline. Integrate the smallest vertical slice first, then use its captured frames to review UI changes. Avoid growing a second product before it improves this editor's development loop.
