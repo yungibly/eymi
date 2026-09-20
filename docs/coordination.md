@@ -16,7 +16,7 @@ This note records the two-agent implementation assignments, starting with the fi
 
 ## Ownership
 
-All participants are working in the same checkout. Changes are immediately visible; no copying or cherry-picking between agents is required.
+The initial checkpoints used one shared checkout with exclusive file ownership. The current visual/input/UI checkpoint uses separate worktrees; its assignment table below supersedes this historical ownership table. Only the coordinator integrates agent commits into `main`.
 
 | Owner | Task ID | Exclusive write ownership |
 | --- | --- | --- |
@@ -225,3 +225,19 @@ The tabs/browser checkpoint is committed as `27ef0f5`. The user reports that it 
 The follow-up research was read-only. A reproduced the keyboard-byte mismatch through the real binary in a headless PTY and identified protocol activation/cleanup requirements. B reviewed all four screenshots and proposed compact production layouts, followed by a separate reading-width/word-wrap change. The forward implementer evaluated existing tools and recommends a bounded spike using a pinned `tui-test` release before building custom infrastructure. No tool was installed and no runtime source was changed.
 
 The coordinator records the combined recommendation in [visual-testing-plan.md](visual-testing-plan.md). That proposal expands the original in-memory harness scope to evaluate a headless PTY/emulator runner through ordinary execution tools. It does not authorize native terminal GUI automation or a browser shell workaround. Subsequent implementation assignments should use worktrees for input handling, test tooling, and UI changes, with explicit integration gates. All three research assignments are complete; the current document is a proposal, not an implementation handoff.
+
+## Active worktree checkpoint: input, visual tests, compact UI
+
+The user approved proceeding with coordinated work. All three assignments start from `54e9dde61cdf4aff80e82448e7b8a43d587dd5e9`, with the standalone test runner pinned locally. The coordinator stays in `/Users/finn/Code/md-term-editor` on `main` and owns documentation, visual review, and integration. The task handoff created new destination task IDs; use the IDs in this table for messages.
+
+| Assignment | Current task ID | Worktree | Branch | Write scope |
+| --- | --- | --- | --- | --- |
+| A: keyboard protocol | `01a0bebe-6591-7252-9ccf-9683cea4cbd2` | `/Users/finn/.codex/worktrees/fca4/md-term-editor` | `codex/keyboard-protocol` | `src/terminal.rs`, new focused protocol tests |
+| Forward implementer: visual runner | `01a0bebe-75a8-7b61-b5f5-f3dedf0aca39` | `/Users/finn/.codex/worktrees/ca81/md-term-editor` | `codex/coordinate-markdown-editor-help` | `tools/tui-test/`, new visual fixtures/scenarios under `tests/ui/` |
+| B: compact interface | `01a0bebf-894b-7911-b89e-97ec625d949e` | `/Users/finn/.codex/worktrees/e488/md-term-editor` | `codex/polish-marklane-interface` | `src/app.rs`, `src/workspace.rs`, related search geometry/tests, CLI help if necessary |
+
+Agents may make focused tested commits in their worktrees and report commit IDs. They do not edit the shared checkout or merge each other's branches. The runner accepts explicit application-binary and artifact-output paths so it can compare independent builds without merging their source. No additional agents are needed for this checkpoint.
+
+The keyboard slice enables disambiguated input and makes terminal restoration idempotent, without the pinned blocking capability query. The runner first captures the unchanged baseline, then checks actual encoded input, images, cells, paste and pointer behavior against the candidate/fixed builds. The compact interface removes redundant chrome and compresses Find/Replace while retaining safe edits and real clickable geometry. Each agent stops at its bounded handoff.
+
+Integration order is keyboard fix, runner adoption/validation, then compact UI and production-image review. Reading width and word wrapping are explicitly deferred to a separate geometry change. Final combined checks and actual before/after images are required before declaring the UI checkpoint complete.
