@@ -41,6 +41,12 @@ impl Clipboard {
         }
     }
 
+    /// A native failure or remote session has switched this session to the
+    /// internal clipboard. UI feedback must make that capability change clear.
+    pub fn uses_fallback(&self) -> bool {
+        self.fallback.is_some()
+    }
+
     /// Retain source text internally even if the system clipboard fails.
     pub fn copy(&mut self, text: &str) -> String {
         self.internal = text.to_owned();

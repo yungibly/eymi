@@ -101,6 +101,14 @@ impl App {
         }
     }
 
+    fn clipboard_feedback(&mut self, message: String, failed: bool) {
+        if failed {
+            self.set_message(message);
+        } else {
+            self.inform(message);
+        }
+    }
+
     pub(crate) fn deactivate(&mut self) {
         self.overlay = Overlay::None;
         self.search = Search::default();
@@ -268,7 +276,10 @@ impl App {
                 KeyCode::Char('x') => self.copy(true),
                 KeyCode::Char('v') => {
                     let (text, message) = self.clipboard.paste();
-                    self.inform(message);
+                    self.clipboard_feedback(
+                        message,
+                        text.is_none() || self.clipboard.uses_fallback(),
+                    );
                     if let Some(text) = text {
                         self.document.insert(&text);
                     }
@@ -469,7 +480,7 @@ impl App {
     fn copy(&mut self, cut: bool) {
         if !self.document.selection().is_empty() {
             let message = self.clipboard.copy(self.document.selected_text());
-            self.inform(message);
+            self.clipboard_feedback(message, self.clipboard.uses_fallback());
             if cut {
                 self.document.insert("");
             }
@@ -658,6 +669,7 @@ impl App {
             }
             _ => {}
         }
+        let mut clipboard_feedback = None;
         let Some(input) = self.search.input_mut() else {
             return;
         };
@@ -668,9 +680,7 @@ impl App {
                 KeyCode::Char('c' | 'x') => {
                     if !input.selection().is_empty() {
                         let message = self.clipboard.copy(input.selected_text());
-                        if !self.message_is_error {
-                            self.message = message;
-                        }
+                        clipboard_feedback = Some((message, self.clipboard.uses_fallback()));
                         if key.code == KeyCode::Char('x') {
                             input.insert("");
                         }
@@ -678,9 +688,8 @@ impl App {
                 }
                 KeyCode::Char('v') => {
                     let (text, message) = self.clipboard.paste();
-                    if !self.message_is_error {
-                        self.message = message;
-                    }
+                    clipboard_feedback =
+                        Some((message, text.is_none() || self.clipboard.uses_fallback()));
                     if let Some(text) = text {
                         input.insert(&text);
                     }
@@ -723,13 +732,11 @@ impl App {
             }
         }
         let changed = before != input.revision();
-        let clipboard_feedback = (control && matches!(key.code, KeyCode::Char('c' | 'x' | 'v')))
-            .then(|| self.message.clone());
         if changed && self.search.focus == Focus::Query {
             self.update_query();
         }
-        if let Some(message) = clipboard_feedback {
-            self.message = message;
+        if let Some((message, failed)) = clipboard_feedback {
+            self.clipboard_feedback(message, failed);
         }
     }
 
@@ -2162,6 +2169,69 @@ mod tests {
         assert_eq!(app.document.text(), "keep **source**");
         assert!(app.message.contains("internal clipboard"));
         assert_eq!(native.lock().unwrap().reads, 0);
+    }
+
+    #[test]
+    fn clipboard_fallback_warnings_survive_source_and_search_input() {
+        let mut app = App::new("recoverable source".into(), None, true);
+        let native = fake_clipboard(&mut app);
+        native.lock().unwrap().error = Some(crate::clipboard::Error::Unavailable("busy".into()));
+        app.set_message("An earlier file error");
+        app.document.select_all();
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        let warning = app.message.clone();
+        assert!(warning.contains("internal clipboard only") && app.message_is_error);
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_event(Event::Paste("new text".into()));
+        draw(&mut app, 80, 24);
+        assert_eq!(app.message, warning);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.message.is_empty() && !app.message_is_error);
+
+        for focus in [Focus::Query, Focus::Replacement] {
+            let mut app = App::new("cat cat".into(), None, true);
+            let native = fake_clipboard(&mut app);
+            native.lock().unwrap().error =
+                Some(crate::clipboard::Error::Unavailable("busy".into()));
+            search(&mut app, "cat", true);
+            if focus == Focus::Replacement {
+                key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+                app.handle_event(Event::Paste("dog".into()));
+            }
+            key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+            key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+            let warning = app.message.clone();
+            assert!(warning.contains("internal clipboard only") && app.message_is_error);
+            key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+            key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+            app.handle_event(Event::Paste("at".into()));
+            draw(&mut app, 80, 24);
+            assert_eq!(app.message, warning);
+            assert_eq!(app.document.text(), "cat cat");
+            assert_eq!(native.lock().unwrap().reads, 0);
+        }
+    }
+
+    #[test]
+    fn empty_clipboard_warning_is_sticky_but_native_success_is_transient() {
+        let mut app = App::new("keep".into(), None, true);
+        let native = fake_clipboard(&mut app);
+        app.document.select_all();
+        key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
+        let warning = app.message.clone();
+        assert!(warning.contains("no text") && app.message_is_error);
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.message, warning);
+        assert_eq!(app.document.text(), "keep");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        app.document.select_all();
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!app.message_is_error);
+        assert!(app.message.contains("system clipboard"));
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(app.message.is_empty());
+        assert_eq!(native.lock().unwrap().writes, ["keep"]);
     }
 
     #[test]
