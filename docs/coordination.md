@@ -226,7 +226,7 @@ The follow-up research was read-only. A reproduced the keyboard-byte mismatch th
 
 The coordinator records the combined recommendation in [visual-testing-plan.md](visual-testing-plan.md). That proposal expands the original in-memory harness scope to evaluate a headless PTY/emulator runner through ordinary execution tools. It does not authorize native terminal GUI automation or a browser shell workaround. Subsequent implementation assignments should use worktrees for input handling, test tooling, and UI changes, with explicit integration gates. All three research assignments are complete; the current document is a proposal, not an implementation handoff.
 
-## Active worktree checkpoint: input, visual tests, compact UI
+## Worktree checkpoint: input, visual tests, compact UI
 
 The user approved proceeding with coordinated work. All three assignments start from `54e9dde61cdf4aff80e82448e7b8a43d587dd5e9`, with the standalone test runner pinned locally. The coordinator stays in `/Users/finn/Code/md-term-editor` on `main` and owns documentation, visual review, and integration. The task handoff created new destination task IDs; use the IDs in this table for messages.
 
@@ -234,10 +234,20 @@ The user approved proceeding with coordinated work. All three assignments start 
 | --- | --- | --- | --- | --- |
 | A: keyboard protocol | `01a0bebe-6591-7252-9ccf-9683cea4cbd2` | `/Users/finn/.codex/worktrees/fca4/md-term-editor` | `codex/keyboard-protocol` | `src/terminal.rs`, new focused protocol tests |
 | Forward implementer: visual runner | `01a0bebe-75a8-7b61-b5f5-f3dedf0aca39` | `/Users/finn/.codex/worktrees/ca81/md-term-editor` | `codex/coordinate-markdown-editor-help` | `tools/tui-test/`, new visual fixtures/scenarios under `tests/ui/` |
-| B: compact interface | `01a0bebf-894b-7911-b89e-97ec625d949e` | `/Users/finn/.codex/worktrees/e488/md-term-editor` | `codex/polish-marklane-interface` | `src/app.rs`, `src/workspace.rs`, related search geometry/tests, CLI help if necessary |
+| B: compact interface | `01a0bebf-894b-7911-b89e-97ec625d949e` | `/Users/finn/.codex/worktrees/e488/md-term-editor` | `codex/polish-marklane-interface` | `src/app.rs`, `src/workspace.rs`, related search geometry/tests; minimal `src/clipboard.rs` fallback accessor authorized during review |
 
 Agents may make focused tested commits in their worktrees and report commit IDs. They do not edit the shared checkout or merge each other's branches. The runner accepts explicit application-binary and artifact-output paths so it can compare independent builds without merging their source. No additional agents are needed for this checkpoint.
 
 The keyboard slice enables disambiguated input and makes terminal restoration idempotent, without the pinned blocking capability query. The runner first captures the unchanged baseline, then checks actual encoded input, images, cells, paste and pointer behavior against the candidate/fixed builds. The compact interface removes redundant chrome and compresses Find/Replace while retaining safe edits and real clickable geometry. Each agent stops at its bounded handoff.
 
 Integration order is keyboard fix, runner adoption/validation, then compact UI and production-image review. Reading width and word wrapping are explicitly deferred to a separate geometry change. Final combined checks and actual before/after images are required before declaring the UI checkpoint complete.
+
+The user subsequently requested backgrounds on control bars to separate them from document text. B owns that bounded follow-up for tabs, the search dock, and the footer, with light/dark captures. A remains a read-only functional reviewer. Review also identified transient clipboard fallback warnings and a stale no-text warning after a successful retry; B owns typed feedback classification and fake-backend regressions. No native clipboard is accessed by those tests.
+
+### Completed integration
+
+All three agents completed their bounded assignments. Main contains keyboard cleanup/input (`d5cbb61`), the reusable runner (`98dffa8`), compact UI (`27f1e01`), clipboard feedback/retry fixes (`74cda3a`, `91a661a`), and shaded control bars (`9c8aea7`). A reviewed the final UI, warning fixes, and bar styles read-only with no remaining findings. The coordinator reviewed code and production captures and corrected the runner's match assertion to distinguish document occurrences from the search field.
+
+Final combined verification passes 148 Rust tests, build, strict all-target Clippy, formatting, and whitespace checks. The exact integrated executable passes 52 dark runner assertions and 21 light capture assertions; all layout PNGs export. Original Unicode source assertions pass while combining-grapheme PNG failures and a backend ZWJ width mismatch remain explicitly unaccepted visual cases. See the [verification record](prototype-checks.md#verification-record) and [runner guide](../tools/tui-test/README.md).
+
+The worktrees remain available, but all agents are read-only at handoff. No automatic next slice is assigned. Reading width/word wrapping and a native Ghostty check remain separate follow-ups.

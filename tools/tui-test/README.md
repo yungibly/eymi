@@ -1,6 +1,6 @@
 # Local terminal test runner
 
-Use the official standalone `tui-test` binary for the first visual/protocol trial. It exercises the compiled application without adding dependencies to Marklane or requiring a Homebrew installation.
+Use the pinned official standalone `tui-test` binary for bounded visual and protocol checks. It exercises the compiled application without adding dependencies to Marklane or requiring a Homebrew installation.
 
 Pinned release: [`0.1.0-beta.5`](https://github.com/microsoft/tui-test/releases/tag/0.1.0-beta.5), reviewed source commit `6a991eea96d499689a875b7ee5781aa0c18b88d2`.
 
@@ -25,14 +25,16 @@ Bootstrap, SHA-256 verification, `--version`, and `--help` were checked on macOS
 The standard-library Python adapter in `session.py` drives the compiled program through a real PTY and the embedded Ghostty backend. Marklane's scenarios and fixtures live in `tests/ui/visual/`; the adapter contains no editor-specific behavior.
 
 ```sh
+cargo build --locked
+marklane_tui_test="$(sh tools/tui-test/bootstrap.sh)"
 python3 tests/ui/visual/run.py \
-  --tool /absolute/path/to/tui-test \
-  --binary /absolute/path/to/marklane \
-  --output target/visual-baseline \
-  --keyboard baseline
+  --tool "$marklane_tui_test" \
+  --binary target/debug/marklane \
+  --output target/visual-current \
+  --keyboard enhanced
 ```
 
-Use `--keyboard enhanced` for a build that activates keyboard disambiguation. `--suite captures` runs only the visual scenarios; `--suite protocol` and `--suite unicode` isolate the other checks. `--palette light` selects the declared light background/foreground. Each output directory must be new, making comparisons between baseline, keyboard-fix, and UI binaries independent of source integration.
+The current build uses `--keyboard enhanced`; use `--keyboard baseline` only for a pre-fix binary. Explicit tool/binary paths also allow comparing separate worktrees. `--suite captures` runs only the visual scenarios; `--suite protocol` and `--suite unicode` isolate the other checks. `--palette light` selects the declared light background/foreground. Each output directory must be new, making comparisons between baseline, keyboard-fix, and UI binaries independent of source integration.
 
 The runner copies fixtures before making any edits. It removes inherited `NO_COLOR`, sets `TERM=xterm-256color` and `COLORTERM=truecolor`, and starts a fresh daemon with an isolated `TUI_TEST_HOME` and explicit config; it does not change `HOME`. All operations run within one owning Python process and close only that session. On the tested macOS execution sandbox, the local PTY/socket needs ordinary execution escalation; sandbox failure appears as “socket never started accepting connections.” No native terminal window is required.
 

@@ -2,7 +2,7 @@
 
 The headless harness exercises the application's real input and rendering paths. Real-terminal behavior is a separate manual check because agents cannot operate terminal apps through Computer Use in this environment.
 
-Status: tabs and the browser passed combined verification on September 20, 2026: 131 tests, build, strict Clippy, and formatting. The user reports that the build works in Ghostty directly, with UI clutter and a nonworking Shift+Enter search shortcut as follow-ups. The [visual testing plan](visual-testing-plan.md) records those findings and the proposed next verification layer.
+Status: compact UI, shaded control bars, and enhanced keyboard input passed combined verification on September 20, 2026: 148 tests, build, strict Clippy, and formatting. The user previously reported that tabs/browser worked in Ghostty directly, with UI clutter and a nonworking Shift+Enter shortcut. These changes address those reports; a native Ghostty check of this new build remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
 
 ## Automated checks
 
@@ -56,7 +56,7 @@ Use the scratch file above after rebuilding. The initial manual pass need not be
 
 Native clipboard delivery is a manual check. Automated fake-backend tests exercise failures, timeouts, source fidelity, and no-op empty paste without accessing the user's actual clipboard. Native Wayland clipboard support and OSC 52 are deferred; the selected Linux backend uses X11, where availability also depends on the desktop session.
 
-Find needs at least 11 terminal rows and Find/Replace needs 12. Shorter windows show a resize prompt and disable hidden fields/actions. Narrow windows shorten button labels and omit controls that cannot fit; keyboard shortcuts remain available when the panel is tall enough.
+At 80 columns, Find uses one row and Find/Replace uses two, with one shared footer. Narrow windows use a separate action row. Readiness is calculated from the visible fields and remaining document space; unusably small windows show a resize prompt and disable hidden fields/actions. Narrow windows shorten button labels and omit controls that cannot fit, retaining Close/Escape.
 
 ## Search polish check
 
@@ -82,12 +82,27 @@ Use scratch documents for this checkpoint. Existing editor and search checks abo
 
 These checks exercise new terminal interactions. Automated event and cell-buffer tests cover the corresponding state transitions; a real-terminal manual pass remains separate.
 
+## Compact UI and keyboard follow-up
+
+Rebuild and use a scratch file with at least three instances of a word. Two matches cannot distinguish next from previous when navigation wraps.
+
+1. Open Find, type the word, and press Enter to select result 2. Shift+Enter should return to result 1 in Ghostty directly. Check Shift+F3 and Previous as well.
+2. Expand with Ctrl+R: the query and result stay selected. Tab reaches With; Enter replaces one, and Replace All remains explicit. Escape then Ctrl+Z undoes the document edit.
+3. At roughly 80×24, check the compact fields, one count, visible focus, and distinct control bars. Narrow to roughly 42 columns and verify that the fields and visible buttons still work. The tab name should not repeat `LIVE`; the footer reports the current view when space permits.
+4. Quit and verify normal shell input, cursor, and mouse behavior. Native Ghostty font/emoji rendering and OS clipboard delivery remain manual checks; headless captures do not establish them.
+
+The [runner guide](../tools/tui-test/README.md) gives the separate automated visual/protocol command, artifact contents, and Unicode renderer limits. It uses a pinned project-local binary; no Homebrew installation is required.
+
 ## Report a problem
 
 Include the starting fixture or a minimal text sample, the exact input sequence, the terminal and window dimensions if relevant, and what appeared instead of the expected behavior. A screenshot can help with visual defects, but preserve the Markdown text too so the interaction can become a headless regression test.
 
 ## Verification record
 
+- Compact UI/control-bar checkpoint: `cargo test --locked --offline` passes 148 tests: 37 core, 109 binary tests (including 7 terminal lifecycle tests), and 2 real PTY integration tests. Coordinator independently ran the combined suite, build, strict all-target Clippy, formatting, and whitespace checks after integrating the bar backgrounds and clipboard-feedback fixes.
+- New coverage includes compact/narrow geometry, pointer replacement and undo, field focus, persistent file and clipboard warnings, successful clipboard retry, full-width bar backgrounds without document bleed, paired field colors, partial terminal setup, idempotent panic/error cleanup, negotiated keyboard bytes, and restored termios. Clipboard tests use fakes; the PTY tests use temporary files.
+- Final executable runner: 52 assertions pass across the dark capture/protocol/Unicode-source suites, and 21 pass in the light capture suite. All 26 layout PNGs export successfully. Coordinator inspected the integrated 80×24 dark replacement and 42×16 light fallback frames, alongside the agent's wider and empty-field captures. Artifacts are under ignored `target/visual-final-dark/` and `target/visual-final-light/`; each manifest's binary hash matches the final built executable. The runner observed activation followed by backend-generated `ESC[13;2u`, moving result 2 to 1, and one cleanup pop before alternate-screen exit.
+- Full Unicode visual acceptance remains false: three original-fixture PNGs fail on combining graphemes, with SVG/cells/raw traces retained; the backend splits the ZWJ emoji despite intact emitted bytes. Exact saved-source, checkbox undo, multiline paste/undo, and pointer-positioned wheel assertions pass. These documented renderer/profile limits are not silently treated as passing image checks.
 - Tabs/browser checkpoint: `cargo test --locked --offline` passes 131 tests: 37 core, 32 app, 14 workspace, 8 browser, 9 projection, 16 file I/O, 6 clipboard, and 9 search-highlight tests. Coordinator independently ran the full suite, build, strict all-target Clippy, formatting, and whitespace checks after the final path-identity fix.
 - New regressions cover independent tab state, shared clipboard, close/quit cancellation and save failure, modified/repeated confirmation keys, symlink path collisions, dirty markers under clipping, rendered browser controls, empty path paste, small windows, bounded directory scans and reads, file growth, invalid UTF-8/NUL data, and preservation of existing buffers on open failure. An inaccessible old tab's directory no longer blocks unrelated opens or Save As; cached identities still prevent duplicate aliases. Both permission regressions exercised actual denial on this host, with permissions restored afterward. Browser opens are capped at 8 MiB; initial command-line opens retain the existing unbounded behavior.
 - Production CLI help and 80×24 live/source headless renders pass through the new Workspace entry point. These checks do not establish native terminal appearance or shortcut delivery. The subsequent user manual report says tabs/browser work in Ghostty directly; UI clutter and Shift+Enter remain follow-ups.

@@ -1,10 +1,10 @@
 # Visual testing and a quieter interface
 
-Decision proposal · September 20, 2026 · Baseline: `27ef0f5`
+Decision and implementation record · September 20, 2026 · UI baseline: `27ef0f5`
 
-The user reports that the tabs/browser build works, but the interface is verbose and cumbersome. Screenshots were taken in Ghostty directly, without tmux or SSH. The early interaction sketch remains the visual direction. This document plans the next checkpoint; it does not claim that a new harness or UI has been implemented.
+The user reports that the tabs/browser build works, but the interface is verbose and cumbersome. Screenshots were taken in Ghostty directly, without tmux or SSH. The early interaction sketch remains the visual direction. The sections below record the original findings and acceptance plan; the implementation record at the end distinguishes verified results from remaining limits.
 
-## What the screenshots expose
+## What the baseline screenshots expose
 
 - The active tab already has a strong selected appearance; repeating `LIVE` in its title adds weight. Live/source is a view setting, not a second active-tab indicator. Keep the tab label to its name and dirty state; expose view switching separately.
 - Find currently consumes five rows and Replace six, in addition to two footer rows. A title, field label, result count, instructions, and status repeat information. Fields have weak visual boundaries while instructions dominate.
@@ -77,8 +77,45 @@ Do not add a sidebar, outline, new themes, or more workspace features to this fi
 
 ## Coordination
 
-Following the user's agreement, the coordinator installed the official macOS arm64 `0.1.0-beta.5` binary under ignored `target/tools/`, verified the release SHA-256, and checked its version/help. [The bootstrap recipe](../tools/tui-test/README.md) reproduces this project-local setup without Homebrew or a Cargo dependency. The runner trial and runtime/UI changes remain the next implementation work.
+Following the user's agreement, the coordinator installed the official macOS arm64 `0.1.0-beta.5` binary under ignored `target/tools/`, verified the release SHA-256, and checked its version/help. [The runner guide](../tools/tui-test/README.md) reproduces this project-local setup without Homebrew or a Cargo dependency.
 
 The completed three-agent research pass was read-only: A investigated terminal input, B reviewed the UI against the screenshots, and the forward implementer evaluated existing harnesses. The coordinator consolidated the decision and owns this document. No installs or runtime edits occurred during that research assignment; the local installation above followed it.
 
-If implementation follows, isolate input fixes, test infrastructure, and UI changes in separate worktrees from a recorded baseline. Integrate the smallest vertical slice first, then use its captured frames to review UI changes. Avoid growing a second product before it improves this editor's development loop.
+Implementation uses three separate worktrees from `54e9dde`, assigned to keyboard input, test infrastructure, and compact UI. The coordinator reviews and integrates focused commits. Reading width and word-aware wrapping remain a separate geometry change.
+
+## Runner trial findings
+
+The pinned runner drives the real executable through its PTY and embedded Ghostty backend. Its encoder reproduced the baseline failure: `Shift+Enter` generated `ESC[27;2;13~` and left result 2 selected. After the application requested disambiguated input with `ESC[>1u`, the same backend key action generated `ESC[13;2u` and moved from result 2 to result 1. Three matches make direction observable. Separate raw-byte cases retain parser coverage for default Ghostty bytes, enhanced bytes, and legacy Enter; they are not substitutes for that negotiation test.
+
+The terminal fix pushes enhancement after entering the alternate screen and pops it before leaving. Shared, idempotent cleanup prevents the panic hook and guard from popping twice. Focused fault-injection tests cover setup failures and cleanup; real PTY tests verify normal exit and termios restoration. The potentially blocking capability query is avoided.
+
+The reusable Python adapter is independent of Ratatui. Marklane-specific scenarios supply fixtures and assertions. Artifacts retain source/tool hashes, environment, backend, dimensions, palette, actions, cells, cursor/modes, native PNG/SVG captures, byte logs, and casts. Saved scenarios can reexecute actions; casts replay output and resize events only. Each session has a private runtime directory and edits scratch copies without accessing the native clipboard.
+
+The first run inherited `NO_COLOR=1` and `TERM=dumb`, suppressing application colors. Corrected runs remove `NO_COLOR`, set `TERM=xterm-256color` and `COLORTERM=truecolor`, and assert real nondefault cells plus active/passive highlight styles. Palette substitution alone would not have corrected the missing application styles.
+
+Adopt the runner for bounded layout, protocol, and source-interaction checks, with these explicit limits:
+
+- Native PNG export rejects cells containing multi-scalar graphemes, including `e` plus a combining acute accent. The cell data preserves the sequence; SVG and failure traces are retained. Installing a font does not fix the renderer's scalar-count restriction.
+- The original ZWJ emoji bytes reach the backend intact, but its cells split the sequence and overlap the application's two-column cursor placement. No DEC 2027 grapheme-mode activation is emitted. This is an unresolved width/profile mismatch upstream of image export; SVG conversion cannot repair the cell state.
+- A separate fixture with precomposed accents and CJK supports layout-image review. It does not replace the original Unicode fixture or establish full Unicode visual acceptance.
+- Font fallback is not fully pinned. Captures use tui-test's own fixed-cell renderer, not the user's Ghostty desktop pixels. Native font shaping, OS key interception, IME, clipboard delivery, and actual Ghostty appearance remain manual checks.
+
+These limits keep the runner useful now without claiming a general terminal compatibility certification.
+
+## Compact interface implementation
+
+Tabs now show the filename and dirty marker, with active styling rather than a repeated `LIVE` suffix. A single contextual footer replaces permanent capability instructions. At 80×24 the document has 21 rows normally, 20 with Find, and 19 with Replace. The search dock has bounded fields, one count, clickable labelled actions, and a calculated narrow fallback. Ctrl+R retains the query/current result; Tab moves between fields; replacement remains explicit and undoable.
+
+Following the user's additional feedback, neutral backgrounds separate the tab strip, search dock, and footer from document text. Each control background has a paired foreground; input fields have a darker fill. This is a small shared chrome palette, not the planned theme system. The document continues using the terminal's default background.
+
+File failures and clipboard fallback/no-text warnings persist through ordinary input. Explicit dismissal clears them; a successful native clipboard retry replaces a clipboard warning without hiding an unrelated file error. Native clipboard automation remains fake-only.
+
+The background change exposed an assertion that counted the query field as another passive result. The runner now identifies the three document occurrences by their fixture context before checking their styles, retaining the strict one-active/two-passive requirement. Production cell styling did not need to be weakened to satisfy the test.
+
+Bounded reading width, word-aware wrapping, a sidebar, and theme selection remain outside this checkpoint.
+
+## Final integration evidence
+
+The integrated build passes 148 Rust tests plus build, strict all-target Clippy, formatting, and whitespace checks. The coordinator ran all three dark suites and light captures against the same final binary: 52 and 21 assertions respectively. The 26 layout PNGs export successfully; original Unicode failures remain recorded separately rather than counted as image passes.
+
+Local artifacts are retained under ignored `target/visual-final-dark/` and `target/visual-final-light/`, including `captures/05-replace-with-focused-80x24.png` and `captures/06-replace-42x16.png`. Their metadata identifies the exact executable and environment. The coordinator reviewed those integrated frames; both the UI agent and independent reviewer also inspected light/dark and wide/narrow frames. The [prototype guide](prototype-checks.md#compact-ui-and-keyboard-follow-up) lists the short remaining native-terminal check.
