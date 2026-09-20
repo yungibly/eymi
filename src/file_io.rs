@@ -13,6 +13,18 @@ pub struct FileState {
 impl FileState {
     pub fn open(path: PathBuf) -> io::Result<(String, Self)> {
         let baseline = read_optional(&path)?;
+        Self::from_baseline(path, baseline)
+    }
+
+    /// Open like `open`, accepting at most `max_bytes` of UTF-8 source. The
+    /// bounded read probes at most one extra byte, even if the file grows after
+    /// metadata inspection. Missing paths retain the new-empty-file behavior.
+    pub fn open_bounded(path: PathBuf, max_bytes: usize) -> io::Result<(String, Self)> {
+        let baseline = read_optional_with_limit(&path, Some(max_bytes))?;
+        Self::from_baseline(path, baseline)
+    }
+
+    fn from_baseline(path: PathBuf, baseline: Option<Vec<u8>>) -> io::Result<(String, Self)> {
         let text = String::from_utf8(baseline.clone().unwrap_or_default()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -81,13 +93,21 @@ impl FileState {
 }
 
 fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    read_optional_with_limit(path, None)
+}
+
+fn read_optional_with_limit(path: &Path, max_bytes: Option<usize>) -> io::Result<Option<Vec<u8>>> {
     match fs::metadata(path) {
         Ok(metadata) if !metadata.is_file() => return Err(non_regular_error()),
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     }
-    match read_regular_file(path) {
+    let result = match max_bytes {
+        Some(limit) => open_regular_file(path).and_then(|file| read_limited(file, limit)),
+        None => read_regular_file(path),
+    };
+    match result {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
@@ -95,6 +115,13 @@ fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = open_regular_file(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn open_regular_file(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -104,13 +131,28 @@ fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         // O_NONBLOCK avoids waiting for a writer before we can check its type.
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let mut file = options.open(path)?;
+    let file = options.open(path)?;
     // Validate the opened handle, not another pathname lookup, before reading.
     if !file.metadata()?.is_file() {
         return Err(non_regular_error());
     }
+    Ok(file)
+}
+
+fn read_limited(reader: impl Read, max_bytes: usize) -> io::Result<Vec<u8>> {
+    // Do not reserve based on metadata or the caller's potentially huge limit.
+    // Saturation also makes usize::MAX a valid bound without addition overflow.
+    let probe_limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    reader.take(probe_limit).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("File exceeds the {max_bytes}-byte open limit; the file was not changed"),
+        ));
+    }
     Ok(bytes)
 }
 
@@ -163,6 +205,133 @@ mod tests {
         let (text, mut file) = FileState::open(path.clone()).unwrap();
         file.save(&text).unwrap();
         assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn bounded_open_accepts_exact_byte_limit_and_preserves_utf8_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        let source = "\u{feff}# e\u{301}界\r\nbody  \nlast\t";
+        fs::write(&path, source).unwrap();
+        let (text, mut file) = FileState::open_bounded(path.clone(), source.len()).unwrap();
+        assert_eq!(text.as_bytes(), source.as_bytes());
+        assert_eq!(file.baseline.as_deref(), Some(source.as_bytes()));
+        file.save(&text).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), source.as_bytes());
+        let (text, _) = FileState::open_bounded(path, usize::MAX).unwrap();
+        assert_eq!(text, source);
+    }
+
+    #[test]
+    fn bounded_open_rejects_oversized_bytes_without_changing_unbounded_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, "12345").unwrap();
+        let error = FileState::open_bounded(path.clone(), 4).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("4-byte open limit"));
+        assert_eq!(fs::read(&path).unwrap(), b"12345");
+        assert_eq!(FileState::open(path).unwrap().0, "12345");
+    }
+
+    #[test]
+    fn bounded_open_zero_limit_accepts_only_empty_or_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.md");
+        fs::write(&empty, []).unwrap();
+        let (text, file) = FileState::open_bounded(empty, 0).unwrap();
+        assert!(text.is_empty());
+        assert_eq!(file.baseline, Some(Vec::new()));
+        let missing = dir.path().join("missing.md");
+        let (text, file) = FileState::open_bounded(missing.clone(), 0).unwrap();
+        assert!(text.is_empty());
+        assert_eq!(file.baseline, None);
+        assert!(!missing.exists());
+        let nonempty = dir.path().join("nonempty.md");
+        fs::write(&nonempty, "x").unwrap();
+        assert!(FileState::open_bounded(nonempty, 0).is_err());
+    }
+
+    #[test]
+    fn bounded_open_validates_utf8_after_enforcing_the_byte_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.md");
+        fs::write(&path, "é").unwrap();
+        let error = FileState::open_bounded(path.clone(), 1).err().unwrap();
+        assert!(error.to_string().contains("open limit"));
+        assert_eq!(FileState::open_bounded(path.clone(), 2).unwrap().0, "é");
+        fs::write(&path, [0xff]).unwrap();
+        let error = FileState::open_bounded(path.clone(), 1).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("UTF-8"));
+        assert_eq!(fs::read(&path).unwrap(), [0xff]);
+    }
+
+    #[test]
+    fn bounded_read_stops_after_limit_plus_one_when_file_grows_after_open() {
+        use std::io::Seek;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("growing.md");
+        fs::write(&path, "base").unwrap();
+        let mut file = open_regular_file(&path).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 4);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&[b'x'; 32_768])
+            .unwrap();
+        let error = read_limited(&mut file, 4).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(file.stream_position().unwrap(), 5);
+        assert_eq!(fs::metadata(path).unwrap().len(), 32_772);
+    }
+
+    #[test]
+    fn bounded_open_rejects_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = FileState::open_bounded(dir.path().to_owned(), usize::MAX)
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_open_preserves_link_and_nonblocking_fifo_behavior() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.md");
+        let link = dir.path().join("link.md");
+        let hardlink = dir.path().join("hardlink.md");
+        fs::write(&target, "source").unwrap();
+        symlink(&target, &link).unwrap();
+        fs::hard_link(&target, &hardlink).unwrap();
+        for path in [link, hardlink] {
+            let (text, mut file) = FileState::open_bounded(path, 6).unwrap();
+            assert_eq!(text, "source");
+            file.save(&text).unwrap();
+            assert!(file.save("changed").is_err());
+        }
+        assert_eq!(fs::read(&target).unwrap(), b"source");
+        let fifo = dir.path().join("pipe");
+        make_fifo(&fifo);
+        let fifo_link = dir.path().join("pipe-link");
+        symlink(&fifo, &fifo_link).unwrap();
+        for path in [fifo.clone(), fifo_link] {
+            assert_rejected_promptly(move || {
+                FileState::open_bounded(path, 8 * 1024 * 1024).map(|_| ())
+            });
+        }
+        // Exercise replacement after pathname preflight: validating the opened
+        // handle must still reject the FIFO without waiting for a writer.
+        assert_rejected_promptly(move || {
+            open_regular_file(&fifo)
+                .and_then(|file| read_limited(file, 8))
+                .map(|_| ())
+        });
     }
 
     #[test]

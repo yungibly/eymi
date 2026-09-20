@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::workspace::Workspace as App;
 use crossterm::{
     cursor::Show,
     event::{

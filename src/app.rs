@@ -57,6 +57,68 @@ pub struct App {
 }
 
 impl App {
+    pub(crate) fn open_bounded(path: PathBuf, max_bytes: usize) -> io::Result<Self> {
+        let markdown = is_markdown(&path);
+        let (text, file) = FileState::open_bounded(path, max_bytes)?;
+        if text.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "This file contains binary NUL bytes; choose a UTF-8 text file",
+            ));
+        }
+        Ok(Self::new(text, Some(file), markdown))
+    }
+
+    pub(crate) fn path(&self) -> Option<&std::path::Path> {
+        self.file.as_ref().map(|file| file.path.as_path())
+    }
+
+    pub(crate) fn workspace_commands_allowed(&self) -> bool {
+        !matches!(self.overlay, Overlay::SaveAs { .. } | Overlay::Quit)
+    }
+
+    pub(crate) fn pending_save_path(&self) -> Option<PathBuf> {
+        match &self.overlay {
+            Overlay::SaveAs { path, .. } if !path.is_empty() => Some(PathBuf::from(path)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn saving_as(&self) -> bool {
+        matches!(self.overlay, Overlay::SaveAs { .. })
+    }
+
+    pub(crate) fn set_message(&mut self, message: impl Into<String>) {
+        self.message = message.into();
+    }
+
+    pub(crate) fn deactivate(&mut self) {
+        self.overlay = Overlay::None;
+        self.search = Search::default();
+        self.search_geometry = SearchGeometry::default();
+        self.field_drag = None;
+        self.dragging = false;
+        self.anchor_screen_row = None;
+    }
+
+    pub(crate) fn save_for_workspace(&mut self) {
+        self.save(false);
+    }
+
+    pub(crate) fn workspace_event(&mut self, event: Event, clipboard: &mut Clipboard) {
+        // Workspace owns the one session clipboard; per-document placeholders
+        // never create a native worker and cannot retain a stale internal copy.
+        std::mem::swap(&mut self.clipboard, clipboard);
+        self.handle_event(event);
+        std::mem::swap(&mut self.clipboard, clipboard);
+    }
+
+    pub(crate) fn enable_workspace_clipboard(&mut self, clipboard: &mut Clipboard) {
+        std::mem::swap(&mut self.clipboard, clipboard);
+        self.enable_system_clipboard();
+        std::mem::swap(&mut self.clipboard, clipboard);
+    }
+
     pub fn open(path: Option<PathBuf>) -> io::Result<Self> {
         let markdown = path.as_ref().is_none_or(|p| is_markdown(p));
         let (text, file) = match path {
@@ -853,6 +915,10 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
+        self.draw_with_cursor(frame, true);
+    }
+
+    pub(crate) fn draw_with_cursor(&mut self, frame: &mut Frame, show_cursor: bool) {
         let area = frame.area();
         if self.terminal_height != area.height || self.search_geometry.panel.width != area.width {
             self.field_drag = None;
@@ -989,12 +1055,13 @@ impl App {
                 Rect::new(area.x, area.bottom() - 2, area.width, 1),
             );
             frame.render_widget(
-                Paragraph::new(" F1 Help  ^F Find  ^S Save  ^E View  ^Q Quit")
+                Paragraph::new(" F1 Help  ^N New  ^O Open  ^W Close  F7/F8 Tabs  ^Q Quit")
                     .style(Style::default().add_modifier(Modifier::DIM)),
                 Rect::new(area.x, area.bottom() - 1, area.width, 1),
             );
         }
-        if self.overlay == Overlay::None
+        if show_cursor
+            && self.overlay == Overlay::None
             && height > 0
             && cursor_row >= self.scroll
             && cursor_row < self.scroll + height
@@ -1147,7 +1214,7 @@ impl App {
     fn draw_overlay(&self, frame: &mut Frame) {
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
-            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind Enter: next; With Enter: replace one. Alt+R/A: one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit with unsaved prompt\n\nLive view reveals active source. Small UTF-8 files only.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
+            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind Enter: next; With Enter: replace one. Alt+R/A: one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nLive view reveals active source. Small UTF-8 files only.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
             Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
             Overlay::SaveAs { path, .. } => (" Save As · new filename ", format!("{}▏\n\nEnter: Save  ·  Esc: Cancel\nExisting files are protected; enter a new path.\n\n{}", safe_text(path), safe_text(&self.message))),
         };
@@ -1156,7 +1223,7 @@ impl App {
         let height = area
             .height
             .saturating_sub(2)
-            .min(if self.overlay == Overlay::Help { 19 } else { 9 });
+            .min(if self.overlay == Overlay::Help { 21 } else { 9 });
         if width < 4 || height < 3 {
             return;
         }
@@ -1252,7 +1319,7 @@ fn draw_search_buttons(
     buttons
 }
 
-fn draw_field(
+pub(crate) fn draw_field(
     frame: &mut Frame,
     area: Rect,
     label: &str,

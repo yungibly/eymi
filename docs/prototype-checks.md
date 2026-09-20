@@ -2,7 +2,7 @@
 
 The headless harness exercises the application's real input and rendering paths. Real-terminal behavior is a separate manual check because agents cannot operate terminal apps through Computer Use in this environment.
 
-Status: search polish passed combined verification on September 20, 2026: 102 tests, build, strict Clippy, and formatting. The user reported that the previous build works and requested simpler field navigation, clickable controls, and highlighting all matches. Those refinements are implemented; the short search checklist below covers the new behavior.
+Status: tabs and the browser passed combined verification on September 20, 2026: 131 tests, build, strict Clippy, and formatting. Earlier search refinements are also implemented. The user reported that the preceding find/clipboard build works; search polish and tabs/browser have separate manual checklists below.
 
 ## Automated checks
 
@@ -69,12 +69,28 @@ Use a scratch document with several instances of the same word, including one in
 
 Automated checks assert cell colors/modifiers alongside actual input events. They verify the renderer's intended distinction; appearance still depends on the terminal palette.
 
+## Tabs and browser check
+
+Use scratch documents for this checkpoint. Existing editor and search checks above remain applicable.
+
+1. **Independent tabs.** Edit a document, select text, switch to source view, and scroll. Ctrl+N opens an untitled Markdown tab. Add different text, then switch back with F7/F8, Ctrl+PageUp/PageDown, and the tab strip. Each tab retains its state and undo history. Copy in one tab and paste in another, including after closing the tab where the copy originated. Switching tabs closes Find.
+2. **Unsaved work.** Ctrl+W prompts before closing a dirty tab. Escape retains it, Y saves it, and N discards it. Ctrl+N or Ctrl+Y while the confirmation is shown must not count as a discard or save answer. A long filename still displays its `*` unsaved marker. Closing the last tab leaves a new untitled document.
+3. **Quit cancellation.** Make two tabs dirty and press Ctrl+Q. Choose N for the first, then Escape for the second: both documents and their edits must remain. Repeat and choose Y for an untitled document, then cancel Save As: quitting must stop. A failed save must also retain unsaved text.
+4. **Browse and open.** Ctrl+O opens near the current file. Use arrows, PageUp/PageDown, Enter, and clicks to navigate; Backspace or the Up button goes to the parent. Tab edits the path. F2 toggles hidden entries; F5 shows all file types. Open a text file, then open the same path again: its existing tab is selected. Escape or Close returns to editing.
+5. **Rejected opens and collisions.** Try an invalid UTF-8 or NUL-containing file and a text file larger than 8 MiB. An error must leave the original document intact. Save As must reject a target already owned by another tab, even if that target does not yet exist. Empty paste in the browser path must preserve any selected path text.
+6. **Small windows.** Narrow the tab strip and browser; visible controls must keep their actual targets. In a browser too short for an entry, the resize state must not open an unseen selection. Restore the window and continue without losing edits.
+
+These checks exercise new terminal interactions. Automated event and cell-buffer tests cover the corresponding state transitions; a real-terminal manual pass remains separate.
+
 ## Report a problem
 
 Include the starting fixture or a minimal text sample, the exact input sequence, the terminal and window dimensions if relevant, and what appeared instead of the expected behavior. A screenshot can help with visual defects, but preserve the Markdown text too so the interaction can become a headless regression test.
 
 ## Verification record
 
+- Tabs/browser checkpoint: `cargo test --locked --offline` passes 131 tests: 37 core, 32 app, 14 workspace, 8 browser, 9 projection, 16 file I/O, 6 clipboard, and 9 search-highlight tests. Coordinator independently ran the full suite, build, strict all-target Clippy, formatting, and whitespace checks after the final path-identity fix.
+- New regressions cover independent tab state, shared clipboard, close/quit cancellation and save failure, modified/repeated confirmation keys, symlink path collisions, dirty markers under clipping, rendered browser controls, empty path paste, small windows, bounded directory scans and reads, file growth, invalid UTF-8/NUL data, and preservation of existing buffers on open failure. An inaccessible old tab's directory no longer blocks unrelated opens or Save As; cached identities still prevent duplicate aliases. Both permission regressions exercised actual denial on this host, with permissions restored afterward. Browser opens are capped at 8 MiB; initial command-line opens retain the existing unbounded behavior.
+- Production CLI help and 80×24 live/source headless renders pass through the new Workspace entry point. These checks do not establish native terminal appearance or shortcut delivery; tabs/browser await a user manual pass.
 - Search polish checkpoint: `cargo test --locked --offline` passes 102 tests: 37 core, 32 app, 9 projection, 9 file I/O, 6 clipboard, and 9 search-highlight tests. A test-fixture-only Clippy adjustment was then verified by all 9 focused highlight tests and strict all-target Clippy.
 - `cargo build --locked --offline`, `cargo clippy --locked --offline --all-targets -- -D warnings`, `cargo fmt --all -- --check`, and `git diff --check` pass.
 - Regression checks cover checkbox padding, repeated Enter and reopened prose, source find/replace, stale match invalidation, one-step Replace All undo, Unicode search fields, short-window action suppression, clipboard fallback/timeout/teardown, empty native and terminal paste, EOF disclosure, wrap-boundary cursor affinity, BOM/line endings, read-only saves, and nonblocking rejection of FIFO targets.

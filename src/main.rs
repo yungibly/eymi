@@ -1,4 +1,5 @@
 mod app;
+mod browser;
 mod clipboard;
 mod file_io;
 mod projection;
@@ -6,6 +7,7 @@ mod search;
 mod search_highlight;
 mod simulation;
 mod terminal;
+mod workspace;
 
 use std::{
     io::{self, IsTerminal},
@@ -29,7 +31,7 @@ fn run() -> io::Result<()> {
             match argument.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "Marklane — terminal Markdown editor prototype\n\nUsage: marklane [--source] [FILE]\n       marklane --snapshot [--source] [FILE]\n\nWithout FILE, opens an untitled Markdown buffer.\n--snapshot prints the real 80×24 render without accessing the system clipboard.\n\nCtrl+S Save · F4 Save As · Ctrl+E/F6 View · F1 Help · Ctrl+Q Quit\nCtrl+F Find · Ctrl+R Replace · F3/Shift+F3 Next/Previous match\nSearch: Tab switches fields; With Enter replaces one; Alt+R/A replaces one/all.\nCtrl+C/X/V uses the system clipboard locally; SSH/errors use internal fallback.\nTerminal paste is supported. Native Linux clipboard needs X11/XWayland.\nUTF-8 only. Existing files changed on disk are protected from overwrite."
+                        "Marklane — terminal Markdown editor prototype\n\nUsage: marklane [--source] [FILE]\n       marklane --snapshot [--source] [FILE]\n\nWithout FILE, opens an untitled Markdown buffer.\n--snapshot prints the real 80×24 render without accessing the system clipboard.\n\nCtrl+N New · Ctrl+O Open browser · Ctrl+W Close tab · Ctrl+Q Quit all\nF7/F8 or Ctrl+PageUp/PageDown switches tabs; the tab strip is clickable.\nCtrl+S Save · F4 Save As · Ctrl+E/F6 View · F1 Help\nCtrl+F Find · Ctrl+R Replace · F3/Shift+F3 Next/Previous match\nSearch: Tab switches fields; With Enter replaces one; Alt+R/A replaces one/all.\nCtrl+C/X/V uses the system clipboard locally; SSH/errors use internal fallback.\nTerminal paste is supported. Native Linux clipboard needs X11/XWayland.\nBrowser: Tab edits path; F2 shows hidden files; F5 shows all files.\nBrowser opens UTF-8 text up to 8 MiB; larger files are rejected.\nExisting files changed on disk are protected from overwrite."
                     );
                     return Ok(());
                 }
@@ -65,9 +67,9 @@ fn run() -> io::Result<()> {
             ));
         }
     }
-    let mut app = app::App::open(path)?;
+    let mut app = workspace::Workspace::open(path)?;
     if source {
-        app.live = false;
+        app.editor_mut().live = false;
     }
     if snapshot {
         print!("{}", simulation::snapshot(&mut app, 80, 24)?);

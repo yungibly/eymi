@@ -31,7 +31,7 @@ Use module-local tests initially, or add explicit integration-test entrypoints u
 
 Completed review-fix handoff: B explicitly released `src/file_io.rs` to A to fix reproduced read-only overwrite and FIFO-baseline-read hangs. A preserved the public `FileState` API, added focused regressions, and returned ownership to B. B then ran final combined checks. The normal ownership table above applies again.
 
-The user has authorized commits at coherent milestones. The coordinator owns integration commits across reviewed participant files; implementing agents leave their work unstaged until handoff. Keep implementation in the working tree until a coherent checkpoint is ready. Do not spawn additional agents for this assignment without coordination.
+The user has authorized commits at coherent milestones. The coordinator owns integration commits across reviewed participant files; agents in the shared checkout leave their work unstaged until handoff. Separate worktree assignments may authorize focused commits as described below. Keep shared implementation in the working tree until a coherent checkpoint is ready. Do not spawn additional agents for this assignment without coordination.
 
 ## Shared interface handoff
 
@@ -195,3 +195,25 @@ The user opened “Coordinate markdown editor help” to advance implementation 
 The forward implementer owns the app/workspace/browser paths in the table while implementing. A and B remain read-only reviewers of those paths until an explicit file handoff. Small fixes must go through the current writer or follow an explicit ownership transfer; no concurrent edits to the same files. The coordinator retains documentation and commit ownership. Dependencies remain A's responsibility.
 
 The next slice must provide Ctrl+N, Ctrl+O, per-tab state, Ctrl+W with dirty-document handling, Ctrl+Q protecting every dirty tab, keyboard switching and clickable tabs. Browser opening must reuse safe regular-file/UTF-8 validation, retain the existing document on failure, avoid recursive scans, and prevent duplicate same-path buffers or Save As conflicts with another open tab. Clipboard is app-wide; search behavior on tab switching must be explicit. File watching, recovery, themes, shell sessions, and splits are not part of this slice. Deliver a runnable slice with actual input/render-path tests, then hand it back for review before moving on.
+
+The validated baseline is committed as `de16f81`. The forward implementer is released to edit its assigned paths. A also has a temporary, exclusive `src/file_io.rs` assignment: add backward-compatible `FileState::open_bounded(path, max_bytes)` with a regular-handle read capped at limit plus one, so a growing file cannot bypass a metadata-only size check. Existing open/save behavior remains unchanged. B and the forward implementer keep this file read-only until A's handoff. In-app/browser opening will use an explicit 8 MiB limit and retain the current document on rejection.
+
+A's bounded-open dependency is complete, reviewed by the coordinator, and passes all 16 file I/O tests. File ownership returns to B. The forward implementer has handed off the runnable tabs slice for B's read-only review while retaining write ownership during browser integration.
+
+### Worktree coordination
+
+The user authorizes separate worktrees when they help coordination. Finish the current tabs/browser checkpoint in its existing checkout with the file ownership above; do not move or copy another task's uncommitted work. After a tested integration commit, use separate worktrees for independent implementation and review fixes that would otherwise share files. Each assignment records its base commit, worktree path, branch, and scope. Reviewers can stay read-only in a shared checkout when no independent edits are needed.
+
+Worktree owners may make focused, tested commits within their assignment and report commit IDs and validation. The coordinator integrates those commits, resolves any overlap, and runs combined checks before updating the integration branch. The current shared-checkout slice still leaves staging and commits to the coordinator.
+
+### Tabs/browser review gate
+
+B's isolated read-only review reproduced three blockers in the initial tabs slice: modified key shortcuts could answer dirty-document prompts, lexical normalization before resolving symlinks could bypass path collisions, and clipping a long filename could hide its dirty marker. The forward implementer owns fixes and regression coverage. The coordinator also requested preservation of path selection on empty/sanitized-empty paste and suppression of browser activation when the window cannot show an entry. A reviews the browser after its handoff; B verifies the tab fixes. Final combined checks and the integration commit follow those reviews.
+
+B verified all three tab fixes with independent regressions. The initial frozen handoff passed the coordinator's 129-test suite, build, strict all-target Clippy, formatting, live/source snapshots, and CLI help. A's browser review then reproduced one further issue: resolving an inaccessible old tab path blocks unrelated opens and Save As. The forward implementer has a narrow assignment to fix that lookup while preserving strict target validation and duplicate-path protection; A verifies the correction before the final integration commit.
+
+### Completed tabs/browser checkpoint
+
+The forward implementer delivered and froze the workspace and browser. A independently verified the final identity-cache correction under actual permission denial: unrelated opens and Save As proceed, old dirty text/selection/history survive, and aliases still reuse or protect the existing tab. B independently verified confirmation modifiers/event kinds, cancellation, symlink/parent traversal, and dirty markers down to one cell. Both reviewers report no remaining actionable findings in their assigned scopes.
+
+Final coordinator validation passes 131 tests (37 core, 32 app, 14 workspace, 8 browser, 9 projection, 16 file I/O, 6 clipboard, 9 highlights), build, strict all-target Clippy, formatting, and whitespace checks. Live/source headless render and CLI-help checks pass through Workspace. The [tabs/browser manual checklist](prototype-checks.md#tabs-and-browser-check) covers the remaining native-terminal verification. Source is frozen for the coordinator's integration commit; subsequent independent implementation or fixes can branch from this checkpoint in separate worktrees.

@@ -50,6 +50,12 @@ Apply match colors to the final visible glyph styles, using source-range overlap
 
 Separate modules for `document`, `editing`, `markdown`, `projection`, `terminal`, `workspace`, `files`, and `theme`. A headless command runner should exercise editing without opening a real terminal.
 
+The implemented `Workspace` routes terminal events and owns a list of per-document `App` instances. Each tab retains its document, file baseline, undo history, selection, projection cache, view, and scrolling state. A single workspace clipboard is supplied to the active editor for input handling, so switching or closing tabs does not create native workers or lose copied text. Switching closes search and invalidates pointer gestures. The production terminal and headless snapshot both draw through `Workspace`; existing single-editor tests remain usable.
+
+Close and quit are workspace operations. Quit checks each dirty tab and defers discards until the whole sequence succeeds; cancellation or a save failure leaves every unclosed buffer recoverable. Save As checks for another tab owning the target before writing. Path comparison resolves symlinks before interpreting parent components and supports files that do not exist yet. Each tab retains its last resolved identity if its directory becomes inaccessible, so unrelated opens and saves continue. The requested destination is still resolved strictly; successful Save As refreshes the retained identity.
+
+The `browser` module lists one directory with a bounded enumeration and a small sample for unfamiliar extensions. It exposes actual rendered hit regions for rows, controls, and the Unicode path field. Browser opening uses `FileState::open_bounded`: validate a regular opened handle, read at most the limit plus one byte, reject oversized or invalid UTF-8 source, and only then construct a new editor. A metadata size check alone cannot enforce the limit if a file grows during the read. The browser also rejects NUL-containing text. The existing initial command-line open remains unbounded; full snapshot history and full-document layout still make small documents the intended workload.
+
 ### Positions and mapping
 
 Use distinct types for UTF-8 byte offsets, character indexes, grapheme boundaries, source lines, and terminal-cell coordinates. Parser ranges and buffer APIs may use different units; conversions must be explicit. A Unicode scalar is not necessarily a complete user-visible character or a terminal cell.
