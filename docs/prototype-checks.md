@@ -130,6 +130,22 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- Eymi feature and rename checkpoint, September 22, 2026: **307 tests** pass
+  on macOS with both Rust 1.89.0 and Rust 1.98.0 (69 core, 227 app/helpers,
+  6 CLI, 5 real-process PTY). Formatting, strict all-target Clippy, whitespace
+  checks, and debug/release builds pass. New coverage includes fuzzy document
+  and parsed-heading navigation, source-preserving line move/duplicate and
+  undo, the clickable new-document button, legacy preference-root selection,
+  byte-compatible recovery records, and recovery through an actual restarted
+  Eymi process using legacy state.
+- The renamed executable passes **245 terminal assertions with 32 PNGs and
+  no export failures**: 77 in `target/visual-eymi-workflows/workflows/` and
+  168 in `target/visual-eymi-chrome/chrome/`. Compact and wide captures were
+  inspected, including the document picker and the single-row tab/status
+  layout. Both runs use debug SHA-256
+  `25d18a50ec0d9c9f9112af1da28fa7ce1a3b199f929e7400c067c01932c74e23`.
+  These simplified fixtures do not expand the documented combining/ZWJ,
+  native clipboard, IME, or native terminal coverage.
 - UI polish checkpoint, September 22, 2026: **277 tests** pass (61 core,
   207 app/workspace/helpers, 5 CLI, 4 real PTY). Strict all-target Clippy,
   formatting, whitespace checks, and debug/release builds pass. New coverage

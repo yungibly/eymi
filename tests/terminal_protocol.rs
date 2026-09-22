@@ -82,7 +82,8 @@ impl Session {
                     &mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut size,
+                    // The libc binding is mutable on macOS and const on Linux.
+                    &raw mut size,
                 )
             },
             0

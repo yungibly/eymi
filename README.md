@@ -1,5 +1,7 @@
 # Eymi
 
+[![CI](https://github.com/yungibly/eymi/actions/workflows/ci.yml/badge.svg)](https://github.com/yungibly/eymi/actions/workflows/ci.yml)
+
 A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
 
 The central idea: make a Markdown document pleasant to work in directly, with dependable cursor movement and selection, while preserving the underlying file exactly outside intentional edits.
