@@ -3,5 +3,7 @@ pub mod document;
 pub mod editing;
 pub mod markdown;
 
-pub use document::{Document, EditError, Selection};
+pub use document::{Document, EditError, HistoryLimits, Selection};
 pub use markdown::{Block, BlockKind, MarkdownSnapshot, Task};
+
+pub use editing::InlineStyle;

@@ -1,12 +1,301 @@
 //! Markdown-aware edit commands. Literal insertion never passes through helpers.
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Parser};
+use pulldown_cmark::{Event, Parser, Tag};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    Document,
+    Document, Selection,
     markdown::{self, Block, BlockKind, MarkdownSnapshot},
 };
+
+/// Source delimiter styles used by `Document::toggle_inline`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineStyle {
+    Bold,
+    Italic,
+    Code,
+}
+
+/// Indent/outdent physical lines. A selection ending at another line's start
+/// excludes that line. Insertion points follow their original content; removed
+/// indentation clamps to the line start. BOM and newline bytes are untouched.
+pub fn indent_lines(document: &mut Document, outdent: bool) -> bool {
+    document.break_undo_group();
+    let selection = document.selection();
+    let range = selection.range();
+    let source = document.text();
+    let mut starts = vec![0];
+    starts.extend(source.grapheme_indices(true).filter_map(|(i, grapheme)| {
+        matches!(grapheme, "\r" | "\n" | "\r\n").then_some(i + grapheme.len())
+    }));
+    let first = starts
+        .partition_point(|&start| start <= range.start)
+        .saturating_sub(1);
+    let mut edits = Vec::new();
+    for &start in &starts[first..] {
+        if start > range.end || (!selection.is_empty() && start == range.end) {
+            break;
+        }
+        let position = if start == 0 {
+            markdown::bom_len(source)
+        } else {
+            start
+        };
+        if outdent {
+            let prefix = &source[position..];
+            let removed = if prefix.starts_with('\t') {
+                1
+            } else {
+                prefix.bytes().take(4).take_while(|&b| b == b' ').count()
+            };
+            // A leading combining mark may form a grapheme with indentation.
+            // Never delete any part of that text just to remove whitespace.
+            let end = prefix
+                .grapheme_indices(true)
+                .map(|(i, _)| i)
+                .chain(std::iter::once(prefix.len()))
+                .take_while(|&i| i <= removed)
+                .last()
+                .unwrap_or(0)
+                + position;
+            if end > position {
+                edits.push((position..end, ""));
+            }
+        } else {
+            edits.push((position..position, "    "));
+        }
+        if selection.is_empty() {
+            break;
+        }
+    }
+    if edits.is_empty() {
+        return false;
+    }
+    let map = |offset: usize| {
+        let (mut old_end, mut new_end) = (0, 0);
+        for (range, replacement) in &edits {
+            let start = new_end + range.start - old_end;
+            if offset < range.start {
+                return new_end + offset - old_end;
+            }
+            if offset <= range.end {
+                return start + replacement.len();
+            }
+            old_end = range.end;
+            new_end = start + replacement.len();
+        }
+        new_end + offset - old_end
+    };
+    let after = Selection {
+        anchor: map(selection.anchor),
+        head: map(selection.head),
+    };
+    let mut result = String::new();
+    let mut cursor = 0;
+    for (range, replacement) in edits {
+        result.push_str(&source[cursor..range.start]);
+        result.push_str(replacement);
+        cursor = range.end;
+    }
+    result.push_str(&source[cursor..]);
+    document
+        .replace_with_selection(0..source.len(), &result, after)
+        .expect("whole source boundaries")
+}
+
+/// Toggle a source delimiter pair selected with its contents or immediately
+/// around the selection. Otherwise wrap the selected bytes and keep the content
+/// selected (including reversed selections); an empty selection gets a caret
+/// between delimiters. Exact `**`, `*`, `_`, `__`, and variable backtick runs are
+/// recognized when the parser confirms a single span (or an empty delimiter pair).
+/// Surrounding emphasis whitespace stays outside the delimiters; a whitespace-only
+/// selection is unchanged. Partial/nested selections are wrapped literally.
+/// Code spans choose a fence longer than embedded backtick runs, adding padding
+/// when required. Selected padding remains content on removal; immediately
+/// surrounding padding inserted by this command is removed with its fence.
+pub fn toggle_inline(document: &mut Document, style: InlineStyle) -> bool {
+    document.break_undo_group();
+    let selection = document.selection();
+    let mut range = selection.range();
+    let source = document.text();
+    // A file BOM stays at byte zero, including when the user selects all.
+    if range.start == 0 {
+        range.start = markdown::bom_len(source);
+    }
+    range.end = range.end.max(range.start);
+    if style != InlineStyle::Code && !selection.is_empty() {
+        let selected = &source[range.clone()];
+        let trimmed = selected.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        range.start += selected.len() - selected.trim_start().len();
+        range.end = range.start + trimmed.len();
+        if !document.is_grapheme_boundary(range.start) || !document.is_grapheme_boundary(range.end)
+        {
+            return false;
+        }
+    }
+    let selected = &source[range.clone()];
+    let marker = match style {
+        InlineStyle::Bold => "**",
+        InlineStyle::Italic => "*",
+        InlineStyle::Code => "`",
+    };
+    let mut replacement_range = range.clone();
+    let mut content = selected.to_owned();
+    let mut removed = false;
+    let mut inside_start = 0;
+    let inside_end;
+    let alternatives: &[&str] = match style {
+        InlineStyle::Bold => &["**", "__"],
+        InlineStyle::Italic => &["*", "_"],
+        InlineStyle::Code => &[],
+    };
+    if style == InlineStyle::Code {
+        let ticks = selected.bytes().take_while(|&b| b == b'`').count();
+        let trailing = selected.bytes().rev().take_while(|&b| b == b'`').count();
+        if ticks > 0
+            && ticks == trailing
+            && selected.len() > 2 * ticks
+            && has_inline_wrapper(selected, style, ticks)
+        {
+            content = selected[ticks..selected.len() - ticks].to_owned();
+            removed = true;
+        } else {
+            // Support content selected inside padded or unpadded code fences.
+            for padding in [0, 1] {
+                if padding == 1
+                    && !(source[..range.start].ends_with(' ')
+                        && source[range.end..].starts_with(' '))
+                {
+                    continue;
+                }
+                let left = range.start.saturating_sub(padding);
+                let right = range.end + padding;
+                if right > source.len() {
+                    continue;
+                }
+                let before = source[..left]
+                    .bytes()
+                    .rev()
+                    .take_while(|&b| b == b'`')
+                    .count();
+                let after = source[right..].bytes().take_while(|&b| b == b'`').count();
+                if before > 0
+                    && before == after
+                    && has_inline_wrapper(&source[left - before..right + after], style, before)
+                {
+                    replacement_range = left - before..right + after;
+                    removed = true;
+                    break;
+                }
+            }
+        }
+    } else {
+        for &delimiter in alternatives {
+            let byte = delimiter.as_bytes()[0];
+            let count = delimiter.len();
+            let leading = selected.bytes().take_while(|&b| b == byte).count();
+            let trailing = selected.bytes().rev().take_while(|&b| b == byte).count();
+            if leading == count
+                && trailing == count
+                && selected.len() >= 2 * count
+                && has_inline_wrapper(selected, style, count)
+            {
+                content = selected[count..selected.len() - count].to_owned();
+                removed = true;
+                break;
+            }
+            let before = source[..range.start]
+                .bytes()
+                .rev()
+                .take_while(|&b| b == byte)
+                .count();
+            let after = source[range.end..]
+                .bytes()
+                .take_while(|&b| b == byte)
+                .count();
+            if before == count
+                && after == count
+                && has_inline_wrapper(
+                    &source[range.start - count..range.end + count],
+                    style,
+                    count,
+                )
+            {
+                replacement_range = range.start - count..range.end + count;
+                removed = true;
+                break;
+            }
+        }
+    }
+    if removed {
+        inside_end = content.len();
+    } else {
+        let delimiter = if style == InlineStyle::Code {
+            let longest = selected
+                .split(|c| c != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            "`".repeat(longest + 1)
+        } else {
+            marker.to_owned()
+        };
+        let padding = style == InlineStyle::Code
+            && (selected.starts_with('`')
+                || selected.ends_with('`')
+                || (selected.starts_with(' ')
+                    && selected.ends_with(' ')
+                    && !selected.chars().all(|c| c == ' ')));
+        let space = if padding { " " } else { "" };
+        inside_start = delimiter.len() + space.len();
+        inside_end = inside_start + content.len();
+        content = format!("{delimiter}{space}{content}{space}{delimiter}");
+    }
+    let start = replacement_range.start + inside_start;
+    let end = replacement_range.start + inside_end;
+    let after = if selection.is_empty() {
+        Selection::caret(start)
+    } else if selection.anchor < selection.head {
+        Selection {
+            anchor: start,
+            head: end,
+        }
+    } else {
+        Selection {
+            anchor: end,
+            head: start,
+        }
+    };
+    // Delimiters adjacent to combining text can be part of one grapheme. Reject
+    // an ambiguous removal, instead of slicing or deleting that grapheme.
+    if !document.is_grapheme_boundary(replacement_range.start)
+        || !document.is_grapheme_boundary(replacement_range.end)
+    {
+        return false;
+    }
+    document
+        .replace_with_selection(replacement_range, &content, after)
+        .expect("validated source boundaries")
+}
+
+fn has_inline_wrapper(source: &str, style: InlineStyle, delimiter_len: usize) -> bool {
+    source.len() == delimiter_len * 2
+        || Parser::new_ext(source, markdown::options())
+            .into_offset_iter()
+            .any(|(event, range)| {
+                range == (0..source.len())
+                    && matches!(
+                        (style, event),
+                        (InlineStyle::Bold, Event::Start(Tag::Strong))
+                            | (InlineStyle::Italic, Event::Start(Tag::Emphasis))
+                            | (InlineStyle::Code, Event::Code(_))
+                    )
+            })
+}
 
 /// Prefer the current line's ending, then the nearest preceding ending, then LF.
 pub fn preferred_newline(text: &str, offset: usize) -> &'static str {

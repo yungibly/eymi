@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range};
+use std::{collections::VecDeque, fmt, ops::Range};
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -514,15 +514,36 @@ struct State {
     selection: Selection,
 }
 
-/// An authoritative UTF-8 source buffer, with one undo step per edit command.
-/// The prototype keeps complete history snapshots; it is intended for small files.
+/// Limits for the combined undo and redo history. Zero disables retention.
+/// Bytes count retained String capacities and State sizes, excluding the live
+/// document, saved baseline, and allocator/collection bookkeeping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryLimits {
+    pub max_entries: usize,
+    pub max_bytes: usize,
+}
+
+impl Default for HistoryLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 256,
+            max_bytes: 32 * 1024 * 1024,
+        }
+    }
+}
+
+/// An authoritative UTF-8 buffer with bounded snapshot history. Commands each
+/// create one undo step; only explicit `type_text` calls may coalesce.
+/// Current text and the saved baseline are never discarded by history limits.
 #[derive(Clone, Debug)]
 pub struct Document {
     state: State,
     saved_text: String,
     revision: u64,
-    undo: Vec<State>,
-    redo: Vec<State>,
+    undo: VecDeque<State>,
+    redo: VecDeque<State>,
+    history_limits: HistoryLimits,
+    typing_end: Option<usize>,
 }
 
 impl Document {
@@ -535,8 +556,10 @@ impl Document {
                 selection: Selection::default(),
             },
             revision: 0,
-            undo: Vec::new(),
-            redo: Vec::new(),
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            history_limits: HistoryLimits::default(),
+            typing_end: None,
         }
     }
 
@@ -553,6 +576,7 @@ impl Document {
         self.state.text != self.saved_text
     }
     pub fn mark_saved(&mut self) {
+        self.break_undo_group();
         self.saved_text.clone_from(&self.state.text);
     }
     pub fn can_undo(&self) -> bool {
@@ -602,6 +626,7 @@ impl Document {
     /// ends/carets inside it map to its new end; exact boundaries stay anchored.
     /// Nonempty selections expand to whole graphemes if adjacent text combines.
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
+        self.break_undo_group();
         let matches = self.find_matches(query);
         let count = matches.len();
         if count == 0 || query == replacement {
@@ -659,6 +684,7 @@ impl Document {
     pub fn set_selection(&mut self, selection: Selection) -> Result<(), EditError> {
         self.validate_boundary(selection.anchor)?;
         self.validate_boundary(selection.head)?;
+        self.break_undo_group();
         self.state.selection = selection;
         Ok(())
     }
@@ -668,6 +694,7 @@ impl Document {
     }
 
     pub fn select_all(&mut self) {
+        self.break_undo_group();
         self.state.selection = Selection {
             anchor: 0,
             head: self.text().len(),
@@ -707,6 +734,7 @@ impl Document {
     }
 
     pub fn move_left(&mut self, extend: bool) {
+        self.break_undo_group();
         let selection = self.selection();
         let head = if !extend && !selection.is_empty() {
             selection.range().start
@@ -725,6 +753,7 @@ impl Document {
     }
 
     pub fn move_right(&mut self, extend: bool) {
+        self.break_undo_group();
         let selection = self.selection();
         let head = if !extend && !selection.is_empty() {
             selection.range().end
@@ -759,6 +788,17 @@ impl Document {
         text: &str,
         after: Selection,
     ) -> Result<bool, EditError> {
+        self.break_undo_group();
+        self.apply_replacement(range, text, after, false)
+    }
+
+    fn apply_replacement(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        after: Selection,
+        coalesce: bool,
+    ) -> Result<bool, EditError> {
         if range.start > range.end {
             return Err(EditError::InvalidRange);
         }
@@ -766,16 +806,28 @@ impl Document {
         self.validate_boundary(range.end)?;
         let changed = &self.text()[range.clone()] != text;
         if changed {
-            self.undo.push(self.state.clone());
+            if !coalesce {
+                self.undo.push_back(self.state.clone());
+            }
             self.state.text.replace_range(range, text);
             self.redo.clear();
+            self.trim_history();
             self.revision += 1;
         }
         // Inserting/deleting a combining sequence can merge adjacent graphemes.
         // The resulting caret must not remain inside that newly formed grapheme.
-        self.state.selection = Selection {
-            anchor: self.ceil_grapheme_boundary(after.anchor),
-            head: self.ceil_grapheme_boundary(after.head),
+        self.state.selection = if after.anchor < after.head {
+            Selection {
+                anchor: self.floor_grapheme_boundary(after.anchor),
+                head: self.ceil_grapheme_boundary(after.head),
+            }
+        } else if after.anchor > after.head {
+            Selection {
+                anchor: self.ceil_grapheme_boundary(after.anchor),
+                head: self.floor_grapheme_boundary(after.head),
+            }
+        } else {
+            Selection::caret(self.ceil_grapheme_boundary(after.head))
         };
         Ok(changed)
     }
@@ -812,6 +864,7 @@ impl Document {
     }
 
     pub fn enter(&mut self) -> bool {
+        self.break_undo_group();
         crate::editing::enter(self)
     }
     pub fn literal_newline(&mut self) -> bool {
@@ -821,21 +874,173 @@ impl Document {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(previous) = self.undo.pop() else {
+        self.break_undo_group();
+        let Some(previous) = self.undo.pop_back() else {
             return false;
         };
-        self.redo.push(std::mem::replace(&mut self.state, previous));
+        self.redo
+            .push_back(std::mem::replace(&mut self.state, previous));
+        self.trim_history();
         self.revision += 1;
         true
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(next) = self.redo.pop() else {
+        self.break_undo_group();
+        let Some(next) = self.redo.pop_back() else {
             return false;
         };
-        self.undo.push(std::mem::replace(&mut self.state, next));
+        self.undo
+            .push_back(std::mem::replace(&mut self.state, next));
+        self.trim_history();
         self.revision += 1;
         true
+    }
+
+    /// End a typing transaction before UI commands such as view/tab changes.
+    /// Navigation, selection changes, saving and semantic edit APIs do this too.
+    pub fn break_undo_group(&mut self) {
+        self.typing_end = None;
+    }
+
+    /// Insert keyboard text, grouping contiguous non-whitespace calls. Whitespace
+    /// calls (including mixed/multiline strings) are standalone transactions.
+    /// Replacing a selection is standalone. No time heuristic is used: UI callers
+    /// explicitly break groups for commands; literal paste must use `insert`.
+    pub fn type_text(&mut self, text: &str) -> bool {
+        let selection = self.selection();
+        let groupable =
+            !text.is_empty() && !text.chars().any(char::is_whitespace) && selection.is_empty();
+        let coalesce =
+            groupable && self.typing_end == Some(selection.head) && !self.undo.is_empty();
+        self.break_undo_group();
+        let after = Selection::caret(selection.range().start.saturating_add(text.len()));
+        let changed = self
+            .apply_replacement(selection.range(), text, after, coalesce)
+            .expect("valid document selection");
+        if changed && groupable {
+            self.typing_end = Some(self.selection().head);
+        }
+        changed
+    }
+
+    /// Apply limits immediately. Evict the oldest undo snapshots first, then the
+    /// farthest redo snapshots. An oversized snapshot cannot be retained, so an
+    /// edit/undo of an oversized document may not have an inverse in history.
+    pub fn set_history_limits(&mut self, limits: HistoryLimits) {
+        self.break_undo_group();
+        self.history_limits = limits;
+        self.trim_history();
+    }
+
+    pub fn history_limits(&self) -> HistoryLimits {
+        self.history_limits
+    }
+
+    fn history_bytes(&self) -> usize {
+        self.undo
+            .iter()
+            .chain(&self.redo)
+            .map(|state| state.text.capacity() + std::mem::size_of::<State>())
+            .sum()
+    }
+
+    fn trim_history(&mut self) {
+        let mut bytes = self.history_bytes();
+        while self.undo.len() + self.redo.len() > self.history_limits.max_entries
+            || bytes > self.history_limits.max_bytes
+        {
+            let Some(oldest) = self.undo.pop_front().or_else(|| self.redo.pop_front()) else {
+                break;
+            };
+            bytes -= oldest.text.capacity() + std::mem::size_of::<State>();
+        }
+    }
+
+    /// Skip adjacent whitespace, then one Unicode word-boundary segment.
+    /// Punctuation and emoji are stops too; endpoints are whole graphemes.
+    pub fn move_word_left(&mut self, extend: bool) {
+        let selection = self.selection();
+        let head = if !extend && !selection.is_empty() {
+            selection.range().start
+        } else {
+            self.word_left(selection.head)
+        };
+        self.set_selection(Selection {
+            anchor: if extend { selection.anchor } else { head },
+            head,
+        })
+        .expect("word boundary is a grapheme boundary");
+    }
+
+    /// Rightward counterpart of `move_word_left`.
+    pub fn move_word_right(&mut self, extend: bool) {
+        let selection = self.selection();
+        let head = if !extend && !selection.is_empty() {
+            selection.range().end
+        } else {
+            self.word_right(selection.head)
+        };
+        self.set_selection(Selection {
+            anchor: if extend { selection.anchor } else { head },
+            head,
+        })
+        .expect("word boundary is a grapheme boundary");
+    }
+
+    fn word_left(&self, offset: usize) -> usize {
+        let target = self.text()[..offset]
+            .split_word_bound_indices()
+            .rev()
+            .find(|(_, segment)| !segment.chars().all(char::is_whitespace))
+            .map_or(0, |(start, _)| start);
+        self.floor_grapheme_boundary(target)
+    }
+
+    fn word_right(&self, offset: usize) -> usize {
+        let target = self.text()[offset..]
+            .split_word_bound_indices()
+            .find(|(_, segment)| !segment.chars().all(char::is_whitespace))
+            .map_or(self.text().len(), |(start, segment)| {
+                offset + start + segment.len()
+            });
+        self.ceil_grapheme_boundary(target)
+    }
+
+    pub fn delete_word_backward(&mut self) -> bool {
+        let selection = self.selection();
+        let range = if selection.is_empty() {
+            self.word_left(selection.head)..selection.head
+        } else {
+            selection.range()
+        };
+        self.replace_range(range, "")
+            .expect("valid word boundaries")
+    }
+
+    pub fn delete_word_forward(&mut self) -> bool {
+        let selection = self.selection();
+        let range = if selection.is_empty() {
+            selection.head..self.word_right(selection.head)
+        } else {
+            selection.range()
+        };
+        self.replace_range(range, "")
+            .expect("valid word boundaries")
+    }
+
+    /// Indent affected physical source lines by four spaces in one transaction.
+    pub fn indent_lines(&mut self) -> bool {
+        crate::editing::indent_lines(self, false)
+    }
+
+    /// Remove up to four leading spaces or one leading tab from affected lines.
+    pub fn outdent_lines(&mut self) -> bool {
+        crate::editing::indent_lines(self, true)
+    }
+
+    pub fn toggle_inline(&mut self, style: crate::editing::InlineStyle) -> bool {
+        crate::editing::toggle_inline(self, style)
     }
 
     pub fn markdown(&self) -> MarkdownSnapshot {
@@ -844,6 +1049,7 @@ impl Document {
 
     /// Toggle only the state character, leaving caret/selection anchored.
     pub fn toggle_task(&mut self, task: &Task) -> Result<bool, EditError> {
+        self.break_undo_group();
         if task.revision != self.revision {
             return Err(EditError::StaleRevision {
                 expected: task.revision,
@@ -861,6 +1067,7 @@ impl Document {
     }
 
     pub fn toggle_task_at_caret(&mut self) -> bool {
+        self.break_undo_group();
         let caret = self.selection().head;
         let task = self
             .markdown()
@@ -874,3 +1081,7 @@ impl Document {
         task.is_some_and(|task| self.toggle_task(&task).unwrap_or(false))
     }
 }
+
+#[cfg(test)]
+#[path = "document_commands_tests.rs"]
+mod command_tests;
