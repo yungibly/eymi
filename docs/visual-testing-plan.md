@@ -1,5 +1,27 @@
 # Visual testing and a quieter interface
 
+## September 22 UI polish checkpoint
+
+The header is one tab row; filenames and commands are no longer repeated in
+the rail or idle status bar. The outline highlights the current section and
+the status bar uses distinct theme roles for format, word count and position.
+Optional Nerd Font icons have a saved preference and a plain-font default.
+
+The new chrome suite verifies wide/compact/narrow layouts, active and dirty tabs
+through overflow, unique filename/footer text, outline pointer/keyboard jumps,
+five themes, source selection, and exact source restored by one undo. Plain
+and Nerd runs pass 168 assertions each and export all 32 PNGs. Actual captures
+exposed stale editor header/footer text underneath the workspace replacement;
+explicit clearing and both Rust and terminal regressions verify the fix.
+
+The six broader dark suites and light captures add 129 passing assertions.
+Final evidence totals 465 assertions and 99 frames, with 96 successful PNGs;
+the three known combining-grapheme failures remain separate. See the current
+[verification record](prototype-checks.md#verification-record) for paths and
+executable hashes. The runner now accepts `--icons` and a recorded `--font`
+override. Wide/compact writing previews use the locally installed JetBrainsMono
+Nerd Font Mono, with glyph shape and spacing inspected in the actual PNGs.
+
 ## September 22 theme and recovery checkpoint
 
 The editor now embeds 624 palettes and has a searchable preview picker, saved

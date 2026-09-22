@@ -1,4 +1,4 @@
-use crate::theme::Theme;
+use crate::{icons::IconSet, theme::Theme};
 use std::{ffi::OsString, io, path::PathBuf};
 
 pub const HELP: &str = "Marklane — a source-preserving Markdown editor
@@ -10,6 +10,7 @@ Without FILE, opens an untitled Markdown document. Use -- before a filename
 that starts with a dash. Files must be UTF-8 text, at most 8 MiB.
 
   --theme NAME            Choose a built-in theme (name or ID)
+  --icons plain|nerd      Optional Nerd Font icons (default: plain)
   --list-themes           List built-in theme IDs and names
   --no-state              Disable preferences and crash recovery
   --source                Open with Markdown source visible
@@ -36,6 +37,7 @@ pub struct Options {
     pub snapshot: bool,
     pub source: bool,
     pub theme: Option<Theme>,
+    pub icons: Option<IconSet>,
     pub no_state: bool,
     pub size: (u16, u16),
 }
@@ -54,6 +56,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
         snapshot: false,
         source: false,
         theme: None,
+        icons: None,
         no_state: false,
         size: (80, 24),
     };
@@ -84,6 +87,8 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
                 }
                 Some(value)
                     if value == "--theme"
+                        || value == "--icons"
+                        || value.starts_with("--icons=")
                         || value == "--snapshot-size"
                         || value.starts_with("--theme=")
                         || value.starts_with("--snapshot-size=") =>
@@ -104,6 +109,11 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
                         options.theme = Some(Theme::from_name(value).ok_or_else(|| {
                             invalid(format!("Unknown theme {value:?}; use --list-themes"))
                         })?);
+                    } else if flag == "--icons" {
+                        options.icons = Some(
+                            IconSet::from_name(value)
+                                .ok_or_else(|| invalid("--icons must be plain or nerd"))?,
+                        );
                     } else {
                         options.size = parse_size(value)?;
                         explicit_size = true;
@@ -161,6 +171,7 @@ mod tests {
                 snapshot: false,
                 source: false,
                 theme: None,
+                icons: None,
                 no_state: false,
                 size: (80, 24),
             })
@@ -170,6 +181,7 @@ mod tests {
                 "--snapshot",
                 "--source",
                 "--theme=light",
+                "--icons=nerd",
                 "--snapshot-size",
                 "160x45",
                 "notes.md"
@@ -180,6 +192,7 @@ mod tests {
                 snapshot: true,
                 source: true,
                 theme: Some(Theme::Light),
+                icons: Some(IconSet::Nerd),
                 no_state: false,
                 size: (160, 45),
             })
@@ -192,6 +205,9 @@ mod tests {
             vec!["--theme"],
             vec!["--theme", "no-such-theme-987654321"],
             vec!["--theme="],
+            vec!["--icons"],
+            vec!["--icons", "unknown"],
+            vec!["--icons="],
             vec!["--snapshot-size", "120x36"],
             vec!["--unknown"],
             vec!["a.md", "b.md"],

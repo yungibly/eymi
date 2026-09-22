@@ -2,7 +2,7 @@
 
 A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
 
-**Status: under active development.** The product and command name is **Marklane** / `marklane`; the repository directory remains `md-term-editor`. Build locally to try the theme and recovery checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
+**Status: under active development.** The product and command name is **Marklane** / `marklane`; the repository directory remains `md-term-editor`. Build locally to try the UI polish checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
 
 The central idea: make a Markdown document pleasant to work in directly, with dependable cursor movement and selection, while preserving the underlying file exactly outside intentional edits.
 
@@ -27,9 +27,9 @@ To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin 
 
 Marklane has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
 
-The writing surface uses explicit paired colors, a centered live column up to 88 cells wide, and word-aware prose wrapping. Source view uses the available width; code and tables retain source-oriented wrapping. Quiet tab, search, and footer bars separate controls from the document. Find uses one row at 80 columns; Replace adds one more. Narrow windows place actions on a separate row. Routine feedback clears on the next input, while actionable errors remain visible until dismissed or resolved.
+The writing surface uses explicit paired colors, a centered live column up to 88 cells wide, and word-aware prose wrapping. Source view uses the available width; code and tables retain source-oriented wrapping. A single tab row keeps the filename visible, with a distinct active tab and clickable overflow arrows. The themed status bar shows document type, source-word count, position, and encoding as space permits. It displays SOURCE when Markdown source view is active. Commands are discoverable through F1 and F2; contextual search guidance and errors appear when needed. Find uses one row at 80 columns; Replace adds one more. Narrow windows place actions on a separate row. Routine feedback clears on the next input, while actionable errors remain visible until dismissed or resolved.
 
-F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes file, search, formatting, history, view, sidebar, and theme actions. Ctrl+G jumps to a source line. A documents/heading sidebar appears automatically at 110 columns and above. Click a heading to jump, or press F9 to focus the sidebar and use arrows/Enter. Escape returns to the editor; F9 while focused hides it. The sidebar hides in small windows and can be shown explicitly when at least 60 columns are available. Headings come from the Markdown parser, so fenced-code examples do not appear as headings.
+F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes file, search, formatting, history, view, sidebar, theme, and icon actions. Ctrl+G jumps to a source line. An outline sidebar appears automatically at 110 columns and above, highlighting the current section. Click a heading to jump, or press F9 to focus the sidebar and use arrows/Enter. Escape returns to the editor; F9 while focused hides it. The sidebar hides in small windows and can be shown explicitly when at least 60 columns are available. Headings come from the Markdown parser, so fenced-code examples do not appear as headings.
 
 ## Themes and preferences
 
@@ -37,7 +37,9 @@ F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes
 
 `marklane --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
 
-Explicit theme and sidebar choices are saved to `$XDG_CONFIG_HOME/marklane/settings.conf`, or `~/.config/marklane/settings.conf`. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
+Optional **Nerd Font icons** add small document and outline symbols. Configure your terminal to use a Nerd Font, then choose **Toggle Nerd Font icons** in F2, or launch with `--icons nerd`. The default is plain text; `--icons plain` selects it explicitly. The CLI flag overrides your saved icon preference for that launch. No font is bundled or downloaded.
+
+Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/marklane/settings.conf`, or `~/.config/marklane/settings.conf`. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
 
 ## Editing controls
 

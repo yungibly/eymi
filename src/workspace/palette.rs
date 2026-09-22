@@ -34,11 +34,12 @@ pub(super) enum Command {
     Indent,
     Outdent,
     Theme,
+    Icons,
     Reload,
     Recover,
 }
 impl Command {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -61,6 +62,7 @@ impl Command {
         Self::Indent,
         Self::Outdent,
         Self::Theme,
+        Self::Icons,
         Self::Reload,
         Self::Recover,
     ];
@@ -88,6 +90,7 @@ impl Command {
             Self::Indent => "Indent selected lines",
             Self::Outdent => "Outdent selected lines",
             Self::Theme => "Choose theme…",
+            Self::Icons => "Toggle Nerd Font icons",
             Self::Reload => "Reload file from disk",
             Self::Recover => "Recover documents…",
         }
@@ -116,6 +119,7 @@ impl Command {
             Self::Indent => "Ctrl+]",
             Self::Outdent => "Ctrl+[",
             Self::Theme => "",
+            Self::Icons => "",
             Self::Reload => "F5",
             Self::Recover => "",
         }

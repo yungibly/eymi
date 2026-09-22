@@ -114,3 +114,33 @@ fn builtin_theme_catalog_and_named_snapshots_are_state_free() {
     assert!(!config.exists());
     assert!(!state.exists());
 }
+
+#[test]
+fn icon_snapshots_use_explicit_flags_without_reading_or_changing_preferences() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    let state = directory.path().join("state");
+    fs::create_dir_all(config.join("marklane")).unwrap();
+    let preferences = config.join("marklane/settings.conf");
+    fs::write(&preferences, "version=1\nicons=nerd\n").unwrap();
+    for (arguments, nerd) in [
+        (vec!["--snapshot"], false),
+        (vec!["--snapshot", "--icons=nerd"], true),
+        (vec!["--snapshot", "--icons", "plain"], false),
+    ] {
+        let output = binary()
+            .args(arguments)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(text.contains('\u{e73e}'), nerd);
+    }
+    assert_eq!(
+        fs::read_to_string(preferences).unwrap(),
+        "version=1\nicons=nerd\n"
+    );
+    assert!(!state.exists());
+}

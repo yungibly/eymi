@@ -1,5 +1,5 @@
 //! Small, versioned preferences. Loading is read-only; explicit choices save atomically.
-use crate::theme::Theme;
+use crate::{icons::IconSet, theme::Theme};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -121,6 +121,14 @@ impl Settings {
             _ => None,
         }
     }
+    pub fn icons(&self) -> Option<IconSet> {
+        self.values
+            .get("icons")
+            .and_then(|value| IconSet::from_name(value))
+    }
+    pub fn save_icons(&mut self, icons: IconSet) -> io::Result<()> {
+        self.save("icons", icons.name())
+    }
     pub fn save_theme(&mut self, theme: Theme) -> io::Result<()> {
         self.save("theme", theme.id())
     }
@@ -235,9 +243,11 @@ mod tests {
         let mut settings = Settings::load(dir.path()).unwrap();
         settings.save_theme(Theme::Light).unwrap();
         settings.save_sidebar(Some(false)).unwrap();
+        settings.save_icons(IconSet::Nerd).unwrap();
         let loaded = Settings::load(dir.path()).unwrap();
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
+        assert_eq!(loaded.icons(), Some(IconSet::Nerd));
         assert!(fs::read_to_string(path).unwrap().contains("future=keep"));
     }
     #[test]

@@ -2,7 +2,7 @@
 
 The headless harness exercises the application's real input and rendering paths. Real-terminal behavior is a separate manual check because agents cannot operate terminal apps through Computer Use in this environment.
 
-Status: the September 22 theme/recovery checkpoint adds 624 built-in themes with live previews and saved preferences, safe external-file reloads, and private crash recovery to the everyday editing and workspace features. The verification record below separates automated evidence from native terminal checks. Earlier user reports cover prior builds; a native Ghostty pass of this checkpoint remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
+Status: the September 22 UI polish checkpoint adds a single tab row, an outline-only sidebar, themed status segments, and saved optional Nerd Font icons. It builds on 624 themes, safe external-file reloads, and private crash recovery. The verification record below separates automated evidence from native terminal checks. Earlier user reports cover prior builds; a native Ghostty pass of this checkpoint remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
 
 ## Automated checks
 
@@ -26,7 +26,7 @@ Build, copy `tests/ui/visual/writing.md` to a scratch location, and open that co
 with `--theme light`. The same sequence works with `--theme dark`.
 
 1. At a wide size, check the centered prose, heading gutter, code background,
-   and documents/outline sidebar. Click a heading, then use F9 and arrows/Enter
+   and outline sidebar. Click a heading, then use F9 and arrows/Enter
    to navigate by keyboard. Ctrl+G jumps to a source line. Narrow the window to
    80×24 and 42×16; the sidebar should hide and editing remain usable.
 2. Open F2, filter for `theme`, and run the command. Filter `Catppuccin`, use arrows to preview, Escape to cancel, then reopen and Enter to apply. Reopen F2 and filter `bold`.
@@ -41,6 +41,10 @@ with `--theme light`. The same sequence works with `--theme dark`.
 5. F1 shows scrollable help. Check its final entries in a short window using
    arrows/PageDown. Open a second document, switch tabs, save and close. Dirty
    confirmations and external-change failures must retain edits on cancellation.
+6. With a Nerd Font configured in the terminal, run F2 → Toggle Nerd Font icons.
+   Check the document and outline symbols, then restart to confirm the preference.
+   `--icons plain` overrides it for one launch. The tab row should contain the
+   filename once, and idle status should contain no repeated commands or Live label.
 
 The automated runner covers corresponding actions with scratch files and raw
 keyboard traffic. Native clipboard, terminal key interception, IME, and actual
@@ -126,6 +130,35 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- UI polish checkpoint, September 22, 2026: **277 tests** pass (61 core,
+  207 app/workspace/helpers, 5 CLI, 4 real PTY). Strict all-target Clippy,
+  formatting, whitespace checks, and debug/release builds pass. New coverage
+  checks the single-row viewport, full-frame footer, narrow message/search
+  fallbacks, icon preferences and state-free snapshots, and named-file redraws
+  without duplicate path or metadata text. All 624 themes pass the new explicit
+  chrome-pair contrast checks; the existing document colors remain unchanged.
+- Final terminal evidence totals **465 assertions**: 108 across the six
+  capture/protocol/Unicode/workspace/theme/reload suites in
+  `target/visual-chrome-final-dark/`, 21 light layout assertions in
+  `target/visual-chrome-final-light/`, and 168 each in
+  `target/chrome-agent-plain-fixed/chrome/` and
+  `target/chrome-agent-nerd-fixed/chrome/`. The latter runs use the final runner
+  after correcting idle checks to dismiss transient Save feedback. Together
+  these retain **99 frames, 96 successful PNGs**, and the same three documented
+  original-Unicode-fixture PNG failures. The obsolete chrome run started with
+  the earlier scenario is not counted. All final application manifests use
+  debug SHA-256 `f69b3db9b1735fd64ad61bc3d2752942293dd0c94d8a8f54b19e6e84e6cda050`.
+- Chrome acceptance verifies filename/metadata uniqueness, no idle shortcuts,
+  heading-only keyboard/mouse navigation, nine-tab overflow, dirty markers,
+  selection and exact source restored by undo, five theme previews, and
+  20/42/80/120/160-column layouts. Both icon modes export all 32 PNGs. The Nerd
+  run uses the installed `JetBrainsMono Nerd Font Mono`; inspected glyphs have
+  no boxes or overlap. Wide and compact Catppuccin writing previews are also in
+  `target/visual-chrome-writing-final/`. Native Ghostty/clipboard/IME and full
+  combining/ZWJ renderer acceptance remain separate from this evidence.
+- The optimized UI-polish executable reports `marklane 0.1.0` and renders a
+  120×36 Nord snapshot with Nerd Font icons. Release SHA-256:
+  `0186a75a627e9d96e37ba1b440440f94ae363e81645f5e28549a1c95f272452a`.
 - Theme/recovery checkpoint, September 22, 2026: `cargo test --locked --offline`
   passes **262 tests** (61 core, 193 app/workspace/helpers, 4 CLI, 4 real PTY).
   Exact strict all-target Clippy, formatting, whitespace checks, the offline

@@ -34,6 +34,9 @@ impl Workspace {
         let settings = match Settings::load(config) {
             Ok(settings) => {
                 self.sidebar.preference = settings.sidebar();
+                if let Some(icons) = settings.icons() {
+                    crate::icons::set(icons);
+                }
                 if !explicit_theme && let Some(theme) = settings.theme() {
                     self.editor_mut().set_theme(theme);
                 }
@@ -107,6 +110,18 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "Theme applied for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    pub(super) fn persist_icons(&mut self) {
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_icons(crate::icons::current()));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "Icons changed for this session; could not save preferences: {error}"
             ));
         }
     }
@@ -332,7 +347,7 @@ impl Workspace {
         self.tabs.push(tab);
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
-        self.sidebar.selected = self.active;
+        self.sidebar.selected = 0;
         self.sidebar.invalidate();
         self.tab_hits.clear();
         self.layout_valid = false;

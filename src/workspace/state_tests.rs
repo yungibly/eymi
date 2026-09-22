@@ -59,6 +59,38 @@ fn theme_preview_cancel_accept_and_restart_preserve_document() {
 }
 
 #[test]
+fn icon_preference_survives_restart_without_changing_source_or_selection() {
+    use crate::icons::{self, IconSet};
+    let original = icons::current();
+    icons::set(IconSet::Plain);
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    app.editor_mut().document.insert("# A note\n");
+    app.editor_mut().document.select_all();
+    let selection = app.editor().document.selection();
+    let revision = app.editor().document.revision();
+    app.run_command(Command::Icons);
+    assert_eq!(icons::current(), IconSet::Nerd);
+    assert_eq!(app.editor().document.selection(), selection);
+    assert_eq!(app.editor().document.revision(), revision);
+    let preference = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(preference.contains("icons=nerd"));
+    icons::set(IconSet::Plain);
+    let mut restarted = Workspace::open(None).unwrap();
+    configure(&mut restarted, dir.path());
+    assert_eq!(icons::current(), IconSet::Nerd);
+    restarted.run_command(Command::Icons);
+    assert_eq!(icons::current(), IconSet::Plain);
+    assert_eq!(app.editor().document.text(), "# A note\n");
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "");
+    app.finish_state().unwrap();
+    restarted.finish_state().unwrap();
+    icons::set(original);
+}
+
+#[test]
 fn invisible_or_stale_theme_picker_cannot_accept_and_query_never_edits_source() {
     let original = current_theme();
     let mut app = Workspace::open(None).unwrap();

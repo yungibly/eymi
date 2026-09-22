@@ -3,6 +3,7 @@ mod browser;
 mod cli;
 mod clipboard;
 mod file_io;
+mod icons;
 mod projection;
 mod recovery;
 mod search;
@@ -41,6 +42,7 @@ fn run() -> io::Result<()> {
         cli::Action::Edit(options) => options,
     };
     theme::set_theme(options.theme.unwrap_or_default());
+    icons::set(options.icons.unwrap_or_default());
     let mut app = workspace::Workspace::open(options.path)?;
     if options.source {
         app.editor_mut().live = false;
@@ -60,7 +62,12 @@ fn run() -> io::Result<()> {
     app.enable_system_clipboard();
     if !options.no_state {
         match settings::directories() {
-            Ok((config, state)) => app.enable_state(&config, &state, options.theme.is_some()),
+            Ok((config, state)) => {
+                app.enable_state(&config, &state, options.theme.is_some());
+                if let Some(icons) = options.icons {
+                    icons::set(icons);
+                }
+            }
             Err(error) => app.editor_mut().set_message(error.to_string()),
         }
     }

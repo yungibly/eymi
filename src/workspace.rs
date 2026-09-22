@@ -5,6 +5,7 @@ mod picker;
 mod sidebar;
 #[cfg(test)]
 mod state_tests;
+mod tabs;
 use crate::theme::{Theme, current_theme};
 use crate::{
     app::{App, chrome_active, chrome_muted, chrome_style},
@@ -136,7 +137,7 @@ impl Workspace {
         }
         self.editor_mut().deactivate();
         self.active = index;
-        self.sidebar.selected = index;
+        self.sidebar.selected = 0;
         self.tab_hits.clear();
         self.sidebar.invalidate();
     }
@@ -151,7 +152,7 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
-        self.sidebar.selected = self.active;
+        self.sidebar.selected = 0;
         self.tab_hits.clear();
         self.sidebar.invalidate();
     }
@@ -189,7 +190,7 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
-        self.sidebar.selected = self.active;
+        self.sidebar.selected = 0;
         self.tab_hits.clear();
         self.sidebar.invalidate();
         Ok(())
@@ -314,14 +315,12 @@ impl Workspace {
 
     fn activate_sidebar(&mut self, target: Target) {
         match target {
-            Target::Tab(index) if index < self.tabs.len() => self.switch(index),
             Target::Heading(index) => {
                 if let Some(heading) = self.sidebar.headings.get(index) {
                     let offset = heading.offset;
                     self.editor_mut().jump_to_source(offset);
                 }
             }
-            _ => {}
         }
         self.sidebar.focused = false;
         self.sidebar.invalidate();
@@ -332,7 +331,7 @@ impl Workspace {
         if focus && visible && !self.sidebar.focused {
             self.editor_mut().deactivate();
             self.sidebar.focused = true;
-            self.sidebar.selected = self.active;
+            self.sidebar.selected = 0;
         } else {
             self.sidebar.preference = Some(!visible);
             self.persist_sidebar();
@@ -344,6 +343,9 @@ impl Workspace {
         }
         if self.sidebar.focused {
             self.editor_mut().deactivate();
+            self.refresh_outline();
+            let caret = self.editor().document.selection().head;
+            self.sidebar.select_current(caret);
         }
         self.sidebar.invalidate();
     }
@@ -381,6 +383,16 @@ impl Workspace {
             Command::Outdent => (KeyCode::Char('['), KeyModifiers::CONTROL),
             Command::Theme => {
                 self.open_themes();
+                return;
+            }
+            Command::Icons => {
+                let next = match crate::icons::current() {
+                    crate::icons::IconSet::Plain => crate::icons::IconSet::Nerd,
+                    crate::icons::IconSet::Nerd => crate::icons::IconSet::Plain,
+                };
+                crate::icons::set(next);
+                self.persist_icons();
+                self.layout_valid = false;
                 return;
             }
             Command::Reload => (KeyCode::F(5), KeyModifiers::NONE),
@@ -616,11 +628,11 @@ impl Workspace {
                             return;
                         }
                         KeyCode::Up => {
-                            self.sidebar.move_selection(-1, self.tabs.len());
+                            self.sidebar.move_selection(-1);
                             return;
                         }
                         KeyCode::Down => {
-                            self.sidebar.move_selection(1, self.tabs.len());
+                            self.sidebar.move_selection(1);
                             return;
                         }
                         KeyCode::Home => {
@@ -628,12 +640,13 @@ impl Workspace {
                             return;
                         }
                         KeyCode::End => {
-                            self.sidebar.selected =
-                                self.tabs.len() + self.sidebar.headings.len() - 1;
+                            self.sidebar.selected = self.sidebar.headings.len().saturating_sub(1);
                             return;
                         }
                         KeyCode::Enter => {
-                            self.activate_sidebar(self.sidebar.target(self.tabs.len()));
+                            if let Some(target) = self.sidebar.target() {
+                                self.activate_sidebar(target);
+                            }
                             return;
                         }
                         _ if !ctrl && !matches!(key.code, KeyCode::F(_)) => return,
@@ -686,14 +699,14 @@ impl Workspace {
                         }
                         MouseEventKind::ScrollDown => {
                             if self.sidebar.focused {
-                                self.sidebar.move_selection(3, self.tabs.len());
+                                self.sidebar.move_selection(3);
                             } else {
                                 self.sidebar.scroll_rows(3);
                             }
                         }
                         MouseEventKind::ScrollUp => {
                             if self.sidebar.focused {
-                                self.sidebar.move_selection(-3, self.tabs.len());
+                                self.sidebar.move_selection(-3);
                             } else {
                                 self.sidebar.scroll_rows(-3);
                             }
@@ -827,104 +840,41 @@ impl Workspace {
         self.tab_hits.clear();
         self.sidebar.invalidate();
         if sidebar_visible {
-            let labels: Vec<_> = (0..self.tabs.len())
-                .map(|index| self.label(index))
-                .collect();
-            let top = if area.height >= 10 { 2 } else { 1 };
             let sidebar_area = Rect::new(
                 area.x,
-                area.y + top,
+                area.y + 1,
                 sidebar_width,
-                area.height.saturating_sub(top + 1),
+                area.height.saturating_sub(2),
             );
             let caret = self.editor().document.selection().head;
-            self.sidebar
-                .draw(frame, sidebar_area, &labels, self.active, caret);
-            frame.render_widget(
-                Block::default().style(chrome_style()),
-                Rect::new(area.x, area.bottom() - 1, sidebar_width, 1),
-            );
+            self.sidebar.draw(frame, sidebar_area, caret);
         }
-        if area.height >= 10 && area.width > 0 {
-            let hint = "F2 Commands · F9 Sidebar ";
-            let hint_width = UnicodeWidthStr::width(hint) as u16;
-            let title_width = if area.width >= 60 {
-                area.width.saturating_sub(hint_width + 1)
-            } else {
-                area.width
-            };
-            let prefix = " Marklane  ·  ";
-            let context_width =
-                usize::from(title_width).saturating_sub(UnicodeWidthStr::width(prefix));
-            let context = self.editor().path().map_or_else(
-                || self.label(self.active).trim().to_owned(),
-                |path| compact_path(path, context_width),
-            );
-            let title = format!("{prefix}{context}");
-            frame.render_widget(
-                Block::default().style(chrome_style()),
-                Rect::new(area.x, area.y + 1, area.width, 1),
-            );
-            frame.render_widget(
-                Paragraph::new(clipped(&title, title_width as usize)).style(chrome_muted()),
-                Rect::new(area.x, area.y + 1, title_width, 1),
-            );
-            if area.width >= 60 {
-                frame.buffer_mut().set_string(
-                    area.right() - hint_width,
-                    area.y + 1,
-                    hint,
-                    chrome_muted(),
+        let labels: Vec<_> = (0..self.tabs.len())
+            .map(|index| {
+                let label = self.label(index);
+                let dirty = self.tabs[index].editor.document.is_dirty();
+                let name = label.trim();
+                let name = if dirty {
+                    name.strip_prefix("* ").unwrap_or(name)
+                } else {
+                    name
+                };
+                let icon = crate::icons::current().file(self.tabs[index].editor.is_markdown());
+                let text = format!(
+                    "{}{}{}",
+                    if dirty { "* " } else { "" },
+                    if icon.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{icon} ")
+                    },
+                    name
                 );
-            }
-        }
-        if area.height > 0 && area.width > 0 {
-            let strip = Rect::new(area.x, area.y, area.width, 1);
-            frame.render_widget(Clear, strip);
-            frame.render_widget(Block::default().style(chrome_style()), strip);
-            let width = usize::from(area.width);
-            let labels: Vec<_> = (0..self.tabs.len())
-                .map(|i| clipped(&self.label(i), width.min(30)))
-                .collect();
-            let mut start = self.active;
-            let mut used = UnicodeWidthStr::width(labels[start].as_str());
-            while start > 0
-                && used + UnicodeWidthStr::width(labels[start - 1].as_str()) + 2 <= width
-            {
-                start -= 1;
-                used += UnicodeWidthStr::width(labels[start].as_str());
-            }
-            let mut x = area.x;
-            if start > 0 && width > 3 {
-                frame
-                    .buffer_mut()
-                    .set_string(x, area.y, "‹ ", chrome_muted());
-                x += 2;
-            }
-            for (index, label) in labels.iter().enumerate().skip(start) {
-                let available = usize::from(area.right().saturating_sub(x));
-                if available == 0 {
-                    break;
-                }
-                let label = if available == 1 && self.tabs[index].editor.document.is_dirty() {
-                    "*".to_owned()
-                } else {
-                    clipped(label, available)
-                };
-                let cells = UnicodeWidthStr::width(label.as_str()) as u16;
-                let style = if index == self.active {
-                    chrome_active()
-                } else {
-                    chrome_muted()
-                };
-                frame.buffer_mut().set_string(x, area.y, &label, style);
-                self.tab_hits.push((Rect::new(x, area.y, cells, 1), index));
-                x += cells;
-                if x >= area.right() {
-                    break;
-                }
-            }
-        }
+                tabs::TabLabel { text, dirty }
+            })
+            .collect();
+        self.tab_hits = tabs::draw(frame, area, sidebar_width, &labels, self.active);
+        self.editor().draw_footer(frame, area);
         if self.editor().has_modal() {
             self.editor().draw_overlay(frame);
             self.tab_hits.clear();
@@ -989,7 +939,7 @@ pub(crate) fn popup(frame: &mut Frame, title: &str, body: &str) {
     );
 }
 
-/// Keep the basename visible; spend spare header space on its nearest parent.
+/// Keep the basename visible; use spare dialog space for its nearest parent.
 fn compact_path(path: &Path, width: usize) -> String {
     let name = safe_text(
         &path
@@ -1288,7 +1238,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_tabs_keep_identity_dirty_state_and_view_in_footer() {
+    fn single_header_keeps_identity_in_tabs_and_metadata_in_footer() {
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("draft".into()));
         ctrl(&mut app, 'n');
@@ -1301,12 +1251,8 @@ mod tests {
             .unwrap()
             .0;
         let first = &terminal.backend().buffer()[(active.x, active.y)];
-        assert_eq!(first.symbol(), "*");
-        assert!(
-            first
-                .modifier
-                .contains(Modifier::BOLD | Modifier::UNDERLINED)
-        );
+        assert_eq!(first.symbol(), "▎");
+        assert!(first.modifier.contains(Modifier::BOLD));
         assert!(!first.modifier.contains(Modifier::REVERSED));
         assert_ne!(first.bg, Color::Reset);
         assert_ne!(first.fg, Color::Reset);
@@ -1324,17 +1270,22 @@ mod tests {
             assert_ne!(terminal.backend().buffer()[(x, 0)].bg, Color::Reset);
             assert_eq!(
                 terminal.backend().buffer()[(x, 1)].bg,
-                crate::theme::palette().chrome
+                crate::theme::palette().background
             );
         }
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
         assert!(snapshot.lines().next().unwrap().contains("* Untitled 1.md"));
-        assert!(!snapshot.lines().next().unwrap().contains("LIVE"));
-        assert!(snapshot.contains("Live · Ln"));
+        assert_eq!(snapshot.matches("Untitled 1.md").count(), 1);
+        assert!(snapshot.lines().nth(1).unwrap().contains("draft"));
+        assert!(snapshot.contains("MARKDOWN"));
+        assert!(snapshot.contains("Ln 1, Col 6"));
+        for redundant in ["Live", "F1 Help", "F2 Commands", "F9", "DOCUMENTS"] {
+            assert!(!snapshot.contains(redundant), "{redundant}");
+        }
         assert!(!snapshot.contains("clipboard"));
         ctrl(&mut app, 'e');
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
-        assert!(snapshot.contains("Source · Ln"));
+        assert!(snapshot.contains("SOURCE"));
         assert!(!snapshot.lines().next().unwrap().contains("SOURCE"));
     }
 
@@ -1383,9 +1334,46 @@ mod tests {
         ))
         .unwrap();
         app.handle_event(Event::Paste("dirty".into()));
-        for width in [1, 2, 8, 30, 80] {
-            let terminal = draw(&mut app, width, 24);
-            assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "*");
+        let old_icons = crate::icons::current();
+        for icons in [crate::icons::IconSet::Plain, crate::icons::IconSet::Nerd] {
+            crate::icons::set(icons);
+            for width in [1, 2, 8, 30, 80] {
+                let terminal = draw(&mut app, width, 24);
+                let active = app
+                    .tab_hits
+                    .iter()
+                    .find(|(_, i)| *i == app.active)
+                    .unwrap()
+                    .0;
+                assert!(
+                    (active.x..active.right())
+                        .any(|x| terminal.backend().buffer()[(x, 0)].symbol() == "*"),
+                    "width {width}, {icons:?}"
+                );
+            }
+        }
+        crate::icons::set(old_icons);
+    }
+
+    #[test]
+    fn workspace_bars_replace_editor_chrome_without_leaking_paths_or_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a-unique-note.md");
+        std::fs::write(&path, "# A title\n\nA short note.\n").unwrap();
+        let mut app = Workspace::open(Some(path)).unwrap();
+        for width in [80, 120, 160] {
+            let snapshot = crate::simulation::snapshot(&mut app, width, 36).unwrap();
+            assert_eq!(
+                snapshot.matches("a-unique-note.md").count(),
+                1,
+                "{snapshot}"
+            );
+            assert!(!snapshot.contains(&dir.path().display().to_string()));
+            let footer = snapshot.lines().nth(35).unwrap();
+            for segment in ["MARKDOWN", " words", "Ln 1, Col 1"] {
+                assert_eq!(footer.matches(segment).count(), 1, "{footer}");
+            }
+            assert!(snapshot.lines().nth(1).unwrap().contains("A title"));
         }
     }
 
@@ -1689,10 +1677,9 @@ mod tests {
         draw(&mut app, 120, 36);
         assert!(app.sidebar.headings.is_empty());
         let first = app
-            .sidebar
-            .hits
+            .tab_hits
             .iter()
-            .find(|(_, target)| *target == Target::Tab(0))
+            .find(|(_, index)| *index == 0)
             .unwrap()
             .0;
         click_rect(&mut app, first);
@@ -1886,7 +1873,7 @@ mod tests {
         assert_ne!(rendered.backend().buffer()[(0, 0)].bg, before);
         assert_eq!(
             rendered.backend().buffer()[(0, 2)].bg,
-            crate::theme::palette().chrome
+            crate::theme::chrome_palette().sidebar.background
         );
         assert_eq!(app.editor().document.text(), "# Theme\n");
         assert!(!app.editor().document.can_undo());

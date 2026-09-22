@@ -1,10 +1,12 @@
 //! Source-backed outline and keyboard/mouse navigation for the workspace rail.
-use super::{chrome_active, chrome_muted, chrome_style, clipped};
+use super::clipped;
 use crate::projection::safe_text;
+use crate::{icons, theme::chrome_palette};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Modifier,
     widgets::{Block, Paragraph},
 };
 
@@ -53,7 +55,6 @@ pub(super) fn headings(source: &str) -> Vec<Heading> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Target {
-    Tab(usize),
     Heading(usize),
 }
 
@@ -91,118 +92,124 @@ impl Sidebar {
         }
     }
 
-    pub fn target(&self, tabs: usize) -> Target {
-        if self.selected < tabs {
-            Target::Tab(self.selected)
-        } else {
-            Target::Heading(self.selected - tabs)
-        }
+    pub fn target(&self) -> Option<Target> {
+        self.headings
+            .get(self.selected)
+            .map(|_| Target::Heading(self.selected))
+    }
+
+    pub fn select_current(&mut self, caret: usize) {
+        self.selected = self
+            .headings
+            .iter()
+            .rposition(|heading| heading.offset <= caret)
+            .unwrap_or(0);
     }
 
     pub fn scroll_rows(&mut self, delta: isize) {
         self.scroll = self.scroll.saturating_add_signed(delta);
     }
 
-    pub fn move_selection(&mut self, delta: isize, tabs: usize) {
+    pub fn move_selection(&mut self, delta: isize) {
         self.selected = self
             .selected
             .saturating_add_signed(delta)
-            .min(tabs + self.headings.len() - 1);
+            .min(self.headings.len().saturating_sub(1));
     }
 
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        labels: &[String],
-        active: usize,
-        caret: usize,
-    ) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, caret: usize) {
         self.area = area;
         self.hits.clear();
         if area.width == 0 || area.height == 0 {
             return;
         }
-        frame.render_widget(Block::default().style(chrome_style()), area);
+        let colors = chrome_palette();
+        frame.render_widget(Block::default().style(colors.sidebar.style()), area);
+        let border = if self.focused {
+            colors.sidebar.foreground
+        } else {
+            colors.separator
+        };
         for y in area.y..area.bottom() {
-            frame
-                .buffer_mut()
-                .set_string(area.right() - 1, y, "│", chrome_muted());
+            frame.buffer_mut().set_string(
+                area.right() - 1,
+                y,
+                "│",
+                colors.sidebar.style().fg(border),
+            );
         }
-        let tabs = labels.len();
-        self.selected = self.selected.min(tabs + self.headings.len() - 1);
-        // Labels are presentation rows; selection only counts actionable entries.
-        let mut rows = vec![(" DOCUMENTS".into(), None, false)];
-        for (index, label) in labels.iter().enumerate() {
-            rows.push((
-                format!(" {}", label.trim_end()),
-                Some(Target::Tab(index)),
-                index == active,
-            ));
-        }
-        rows.push((String::new(), None, false));
-        rows.push((" OUTLINE".into(), None, false));
+        let icon = icons::current().outline();
+        let title = if icon.is_empty() {
+            "  Outline".to_owned()
+        } else {
+            format!("  {icon} Outline")
+        };
+        frame.render_widget(
+            Paragraph::new(clipped(&title, area.width.saturating_sub(1) as usize))
+                .style(colors.sidebar.style().add_modifier(Modifier::BOLD)),
+            Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+        );
+        let top = area.y + 2;
+        let height = usize::from(area.height.saturating_sub(2));
+        self.selected = self.selected.min(self.headings.len().saturating_sub(1));
         let current = self
             .headings
             .iter()
             .rposition(|heading| heading.offset <= caret);
-        for (index, heading) in self.headings.iter().enumerate() {
-            rows.push((
-                format!(
-                    " {}{}",
-                    "  ".repeat(usize::from(heading.level.saturating_sub(1)).min(3)),
-                    heading.title
-                ),
-                Some(Target::Heading(index)),
-                current == Some(index),
-            ));
-        }
-        if self.headings.is_empty() {
-            rows.push((" No headings".into(), None, false));
-        }
-        let selected = self.target(tabs);
-        let selected_row = rows
-            .iter()
-            .position(|(_, target, _)| *target == Some(selected))
-            .unwrap_or(0);
-        let height = usize::from(area.height.saturating_sub(1));
         if self.focused && height > 0 {
-            if selected_row < self.scroll {
-                self.scroll = selected_row;
+            if self.selected < self.scroll {
+                self.scroll = self.selected;
             }
-            if selected_row >= self.scroll + height {
-                self.scroll = selected_row + 1 - height;
+            if self.selected >= self.scroll + height {
+                self.scroll = self.selected + 1 - height;
             }
         }
-        self.scroll = self.scroll.min(rows.len().saturating_sub(height));
-        for (row, (label, target, active)) in rows.iter().skip(self.scroll).take(height).enumerate()
-        {
-            let rect = Rect::new(area.x, area.y + row as u16, area.width.saturating_sub(1), 1);
-            let style = if self.focused && *target == Some(selected) || !self.focused && *active {
-                chrome_active()
-            } else {
-                chrome_muted()
-            };
+        self.scroll = self.scroll.min(self.headings.len().saturating_sub(height));
+        if self.headings.is_empty() && height > 0 {
             frame.render_widget(
-                Paragraph::new(clipped(label, rect.width as usize)).style(style),
-                rect,
+                Paragraph::new("  No headings")
+                    .style(colors.sidebar.style().fg(colors.sidebar_muted)),
+                Rect::new(area.x, top, area.width.saturating_sub(1), 1),
             );
-            if let Some(target) = target {
-                self.hits.push((rect, *target));
-            }
         }
-        frame.render_widget(
-            Paragraph::new(clipped(
-                if self.focused {
-                    " ↑↓ Select · Enter · Esc"
-                } else {
-                    " F9 Focus"
-                },
-                area.width.saturating_sub(1) as usize,
-            ))
-            .style(chrome_muted()),
-            Rect::new(area.x, area.bottom() - 1, area.width.saturating_sub(1), 1),
-        );
+        let base_level = self
+            .headings
+            .iter()
+            .map(|heading| heading.level)
+            .min()
+            .unwrap_or(1);
+        for (index, heading) in self
+            .headings
+            .iter()
+            .enumerate()
+            .skip(self.scroll)
+            .take(height)
+        {
+            let selected = if self.focused {
+                self.selected == index
+            } else {
+                current == Some(index)
+            };
+            let style = if selected {
+                colors.tab_active.style().add_modifier(Modifier::BOLD)
+            } else {
+                colors.sidebar.style().fg(colors.sidebar_muted)
+            };
+            let indent = "  ".repeat(usize::from(heading.level.saturating_sub(base_level)).min(3));
+            let marker = if selected { "▎" } else { " " };
+            let label = format!("{marker} {indent}{}", heading.title);
+            let row = Rect::new(
+                area.x,
+                top + (index - self.scroll) as u16,
+                area.width.saturating_sub(1),
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(clipped(&label, row.width as usize)).style(style),
+                row,
+            );
+            self.hits.push((row, Target::Heading(index)));
+        }
     }
 }
 

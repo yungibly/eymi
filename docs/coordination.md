@@ -2,6 +2,32 @@
 
 Working product name: **Marklane**. Command and Cargo package/binary name: **`marklane`**.
 
+## UI polish checkpoint — September 22, 2026
+
+The user requested a single header, less repeated information, richer theme
+colors inspired by Neovim, and restrained optional Nerd Font icons. The same
+three agents worked in isolated worktrees; the coordinator integrated the UI.
+
+| Owner | Worktree branch | Integrated scope |
+| --- | --- | --- |
+| Editor surface | `codex/chrome-colors` | Explicit sidebar, active/inactive tab, and status color pairs; contrast checks across 624 themes |
+| Editing core | `codex/statusline-polish` | One-row body offset, segmented status, source-word count, narrow fallbacks and contextual messages |
+| Workspace verification | `codex/chrome-acceptance` | Real terminal layout, overflow, icon and source-preservation scenarios; configurable capture font |
+| Coordinator | `main` | Single-row tabs, outline-only rail, icon settings/CLI/palette, integrated redraw fixes, tests and documentation |
+
+`theme::chrome_palette()` supplies explicit `ColorPair` roles. The workspace
+draws the tab row and calls `App::draw_footer` across the full frame after the
+editor slice, explicitly clearing each replaced row. Optional icons use
+`icons::IconSet::{Plain,Nerd}`; plain is the default and explicit CLI selection
+overrides saved preferences. The outline contains only parsed headings and
+highlights the current section. F1/F2 retain command discovery.
+
+Real captures exposed residual editor text behind the replacement header and
+footer; explicit row clearing and named-file/wide-sidebar regressions address
+it. Independent review found no remaining tab/outline input issues. CI and
+Homebrew publishing remain a separate step. Current evidence is in the
+[verification record](prototype-checks.md#verification-record).
+
 ## Theme library and recovery checkpoint — September 22, 2026
 
 The current work supersedes the historical ownership below. The same three

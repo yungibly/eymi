@@ -65,6 +65,7 @@ const HELP_LINES: &[&str] = &[
     "Ctrl+S: save · F4 / Ctrl+Shift+S: Save As",
     "F5: reload from disk · dirty text needs confirmation",
     "F2 → Choose theme: preview, apply, and remember colors",
+    "F2 → Toggle Nerd Font icons: optional document/outline symbols",
     "F2 → Recover documents: open an unsaved crash copy",
     "Ctrl+N: new · Ctrl+O: open · Ctrl+W: close tab",
     "F7/F8 or Ctrl+PageUp/PageDown: switch tabs",
@@ -1744,6 +1745,7 @@ impl App {
         let secondary = colors.status_secondary.style();
         let position_style = colors.status_secondary.style();
         let warning = colors.status_warning.style();
+        frame.render_widget(Clear, footer);
         frame.render_widget(Block::default().style(base), footer);
         let head = self.document.selection().head;
         let line = self.document.text()[..head]
