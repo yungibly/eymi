@@ -7,6 +7,7 @@ mod search;
 mod search_highlight;
 mod simulation;
 mod terminal;
+mod theme;
 mod workspace;
 
 use std::{

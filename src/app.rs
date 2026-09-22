@@ -14,7 +14,7 @@ use marklane::{Document, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -22,30 +22,31 @@ use std::{io, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-// Pair every chrome background with its own foreground: terminal defaults may
-// be either light or dark. These styles do not change the document palette.
+pub(crate) use crate::theme::document_style;
+use crate::theme::{self, Theme, palette};
+
 pub(crate) fn chrome_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(224, 228, 235))
-        .bg(Color::Rgb(43, 47, 55))
+    let colors = palette();
+    Style::default().fg(colors.chrome_text).bg(colors.chrome)
 }
 
 pub(crate) fn chrome_muted() -> Style {
-    chrome_style().fg(Color::Rgb(166, 174, 187))
+    chrome_style().fg(palette().chrome_muted)
 }
 
 pub(crate) fn chrome_active() -> Style {
     chrome_style()
-        .bg(Color::Rgb(60, 67, 79))
+        .fg(palette().accent)
+        .bg(palette().active)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
 fn chrome_field() -> Style {
-    chrome_style().bg(Color::Rgb(24, 28, 35))
+    chrome_style().bg(palette().field)
 }
 
 fn chrome_focus() -> Style {
-    chrome_style().fg(Color::Rgb(126, 211, 215))
+    chrome_style().fg(palette().accent)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -86,7 +87,8 @@ pub struct App {
     message: String,
     message_is_error: bool,
     message_origin: MessageOrigin,
-    layout_key: Option<(u64, Selection, usize, bool)>,
+    layout_key: Option<(u64, Selection, usize, bool, Theme)>,
+    editor_area: Rect,
     terminal_height: u16,
     terminal_width: u16,
 }
@@ -176,15 +178,14 @@ impl App {
     }
 
     pub fn open(path: Option<PathBuf>) -> io::Result<Self> {
-        let markdown = path.as_ref().is_none_or(|p| is_markdown(p));
-        let (text, file) = match path {
-            Some(path) => {
-                let (text, file) = FileState::open(path)?;
-                (text, Some(file))
-            }
-            None => (String::new(), None),
-        };
-        Ok(Self::new(text, file, markdown))
+        match path {
+            Some(path) => Self::open_bounded(path, 8 * 1024 * 1024),
+            None => Ok(Self::new(String::new(), None, true)),
+        }
+    }
+
+    pub(crate) fn is_markdown(&self) -> bool {
+        self.markdown
     }
 
     fn new(text: String, file: Option<FileState>, markdown: bool) -> Self {
@@ -216,6 +217,7 @@ impl App {
             message_is_error: false,
             message_origin: MessageOrigin::General,
             layout_key: None,
+            editor_area: Rect::new(0, 0, 80, 24),
             terminal_height: 24,
             terminal_width: 80,
         }
@@ -266,6 +268,21 @@ impl App {
         if self.document.revision() != before.0 && self.document.selection().head != before.1 {
             self.affinity = Affinity::Downstream;
         }
+    }
+
+    /// Switch all UI surfaces on this thread; cached layouts refresh at draw.
+    pub(crate) fn set_theme(&mut self, theme: Theme) {
+        theme::set_theme(theme);
+        self.layout_key = None;
+    }
+
+    /// Reveal a source location without retaining a transient search or drag.
+    pub(crate) fn jump_to_source(&mut self, offset: usize) {
+        self.deactivate();
+        self.preferred_column = None;
+        self.move_to(offset.min(self.document.text().len()), false);
+        self.follow_cursor = true;
+        self.layout_key = None;
     }
 
     pub fn caret_position(&self) -> (usize, usize) {
@@ -449,6 +466,9 @@ impl App {
             event.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
         ) {
+            if !contains(self.editor_area, event.column, event.row) {
+                return;
+            }
             self.scroll = if event.kind == MouseEventKind::ScrollUp {
                 self.scroll.saturating_sub(3)
             } else {
@@ -966,7 +986,18 @@ impl App {
     }
 
     pub(crate) fn draw_with_cursor(&mut self, frame: &mut Frame, show_cursor: bool) {
-        let area = frame.area();
+        self.draw_in(frame, frame.area(), show_cursor);
+    }
+
+    /// Draw inside an absolute editor slice, preserving the reserved header rows.
+    pub(crate) fn draw_in(&mut self, frame: &mut Frame, area: Rect, show_cursor: bool) {
+        let area = area.intersection(frame.area());
+        if self.editor_area != area {
+            self.dragging = false;
+            self.search_geometry = SearchGeometry::default();
+        }
+        self.editor_area = area;
+        frame.render_widget(Block::default().style(document_style()), area);
         if self.terminal_height != area.height || self.terminal_width != area.width {
             self.field_drag = None;
         }
@@ -980,13 +1011,20 @@ impl App {
         }
         let search_height = self.search_height(area.height);
         let body_top = body_top(area.height);
+        let prose_width = area
+            .width
+            .saturating_sub(2)
+            .min(if self.live { 88 } else { u16::MAX });
+        let margin = area.width.saturating_sub(prose_width) / 2;
         self.viewport = Rect::new(
-            area.x.saturating_add(1),
+            area.x.saturating_add(margin),
             area.y.saturating_add(body_top),
-            area.width.saturating_sub(2),
+            prose_width,
             area.height.saturating_sub(body_top + 1 + search_height),
         );
-        if self.parsed.snapshot.revision != self.document.revision() {
+        if self.parsed.snapshot.revision != self.document.revision()
+            || self.parsed.theme != theme::current_theme()
+        {
             self.parsed = Parsed::new(
                 self.document.text(),
                 self.document.markdown(),
@@ -998,6 +1036,7 @@ impl App {
             self.document.selection(),
             self.viewport.width as usize,
             self.live,
+            theme::current_theme(),
         );
         if !self.dragging && self.layout_key != Some(key) {
             self.projection = Projection::build(
@@ -1096,9 +1135,9 @@ impl App {
             ));
         }
         if matches!(self.overlay, Overlay::Search { .. }) {
-            self.draw_search(frame, search_height);
+            self.draw_search(frame, area, search_height, show_cursor);
         }
-        self.draw_footer(frame);
+        self.draw_footer(frame, area);
         self.draw_overlay(frame);
     }
 
@@ -1145,7 +1184,13 @@ impl App {
         self.search.focus = Focus::Query;
     }
 
-    fn draw_search_field(&mut self, frame: &mut Frame, area: Rect, focus: Focus) {
+    fn draw_search_field(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focus: Focus,
+        show_cursor: bool,
+    ) {
         let focused = self.search.focus == focus;
         let frozen_start = self
             .field_drag
@@ -1166,7 +1211,7 @@ impl App {
             label,
             self.search.input(focus),
             focus,
-            focused,
+            focused && show_cursor,
             frozen_start,
         );
         if focused {
@@ -1189,7 +1234,7 @@ impl App {
         self.search_geometry.fields.push(map);
     }
 
-    fn draw_search(&mut self, frame: &mut Frame, height: u16) {
+    fn draw_search(&mut self, frame: &mut Frame, area: Rect, height: u16, show_cursor: bool) {
         self.search_geometry = SearchGeometry::default();
         let Overlay::Search { replace } = self.overlay else {
             return;
@@ -1197,7 +1242,6 @@ impl App {
         if height == 0 {
             return;
         }
-        let area = frame.area();
         let panel = Rect::new(area.x, area.bottom() - 1 - height, area.width, height);
         self.search_geometry.panel = panel;
         frame.render_widget(Clear, panel);
@@ -1240,6 +1284,7 @@ impl App {
                 frame,
                 Rect::new(query_row.x, query_row.y, field_width, 1),
                 Focus::Query,
+                show_cursor,
             );
             frame.render_widget(
                 Paragraph::new(counts).style(chrome_muted()),
@@ -1256,6 +1301,7 @@ impl App {
                     frame,
                     Rect::new(with_row.x, with_row.y, field_width, 1),
                     Focus::Replacement,
+                    show_cursor,
                 );
                 self.search_geometry.buttons.extend(draw_search_buttons(
                     frame,
@@ -1276,6 +1322,7 @@ impl App {
                 frame,
                 Rect::new(query_row.x, query_row.y, field_width, 1),
                 Focus::Query,
+                show_cursor,
             );
             if count_fits {
                 frame.render_widget(
@@ -1284,7 +1331,7 @@ impl App {
                 );
             }
             if replace {
-                self.draw_search_field(frame, row(1), Focus::Replacement);
+                self.draw_search_field(frame, row(1), Focus::Replacement, show_cursor);
             }
             let mut actions = navigation[..2].to_vec();
             if replace {
@@ -1296,8 +1343,7 @@ impl App {
         }
     }
 
-    fn draw_footer(&self, frame: &mut Frame) {
-        let area = frame.area();
+    fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         if area.height < 2 || area.width == 0 {
             return;
         }
@@ -1332,7 +1378,7 @@ impl App {
             Overlay::SaveAs { .. } => "Enter Save · Esc Cancel",
             Overlay::Quit => "Y Save · N Discard · Esc Cancel",
             Overlay::None if area.width < 60 => "F1 Help",
-            Overlay::None => "^S Save · ^F Find · F1 Help",
+            Overlay::None => "^S Save · ^F Find · F2 Commands · F1 Help",
         };
         let mut left = if !self.message.is_empty() {
             safe_text(&self.message)
@@ -1365,7 +1411,7 @@ impl App {
         let show_position = !self.message_is_error
             && usize::from(area.width) >= left_width + usize::from(right_width) + 4;
         let style = if self.message_is_error {
-            chrome_style().fg(Color::Yellow)
+            chrome_style().fg(palette().warning)
         } else {
             chrome_muted()
         };
@@ -1393,7 +1439,7 @@ impl App {
     fn draw_overlay(&self, frame: &mut Frame) {
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
-            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind is literal and case sensitive. Enter: next; With Enter: one.\nAlt+R/A: replace one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nLive view reveals active source. Small UTF-8 files only.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
+            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind is literal and case sensitive. Enter: next; With Enter: one.\nAlt+R/A: replace one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nF2 / Ctrl+P: commands · F9: focus/hide sidebar\nLive view reveals active source. UTF-8 files up to 8 MiB.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
             Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
             Overlay::SaveAs { path, .. } => (" Save As · new filename ", format!("{}▏\n\nEnter: Save  ·  Esc: Cancel\nExisting files are protected; enter a new path.\n\n{}", safe_text(path), safe_text(&self.message))),
         };
@@ -1420,7 +1466,13 @@ impl App {
                     .collect::<Vec<_>>(),
             )
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .style(chrome_style())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(chrome_style().fg(palette().border))
+                    .title(title),
+            ),
             popup,
         );
     }
@@ -1514,9 +1566,7 @@ pub(crate) fn draw_field(
     let label_width = UnicodeWidthStr::width(label).min(usize::from(area.width));
     frame.render_widget(
         Paragraph::new(label).style(if focused {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            chrome_focus().add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         }),
@@ -1599,7 +1649,7 @@ fn is_markdown(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
     fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -2168,7 +2218,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let terminal = draw(&mut app, 80, 24);
         assert_eq!(app.message, error);
-        assert_eq!(terminal.backend().buffer()[(1, 23)].fg, Color::Yellow);
+        assert_eq!(terminal.backend().buffer()[(1, 23)].fg, palette().warning);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.message, error);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -2187,8 +2237,11 @@ mod tests {
             for x in 0..width {
                 assert_ne!(buffer[(x, 0)].bg, Color::Reset);
                 assert_ne!(buffer[(x, 23)].bg, Color::Reset);
-                assert_eq!(buffer[(x, 1)].bg, Color::Reset);
-                assert_eq!(buffer[(x, app.viewport.bottom() - 1)].bg, Color::Reset);
+                assert_eq!(buffer[(x, 1)].bg, palette().background);
+                assert_eq!(
+                    buffer[(x, app.viewport.bottom() - 1)].bg,
+                    palette().background
+                );
                 for y in app.search_geometry.panel.y..app.search_geometry.panel.bottom() {
                     assert_ne!(buffer[(x, y)].bg, Color::Reset);
                 }
@@ -3080,7 +3133,7 @@ mod tests {
             })
             .unwrap()
             .start;
-        assert_eq!(source_cell(&app, &terminal, visible).bg, Color::DarkGray);
+        assert_eq!(source_cell(&app, &terminal, visible).bg, palette().search);
         let scroll = app.scroll;
         let field = app.search_geometry.fields[0].area;
         pointer(
@@ -3099,7 +3152,7 @@ mod tests {
         );
         assert_eq!(
             source_cell(&app, &terminal, app.document.selection().range().start).bg,
-            Color::LightYellow
+            palette().search_active
         );
         assert_eq!(app.document.text(), source);
         assert!(!app.document.is_dirty());

@@ -1,10 +1,11 @@
 //! A conservative, source-anchored projection. Unrecognized syntax stays visible.
+use crate::theme::{self, Theme, palette};
 use marklane::{
     Selection,
     markdown::{BlockKind, MarkdownSnapshot, Task},
 };
 use pulldown_cmark::{Event, Options, Parser, Tag};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
@@ -21,6 +22,7 @@ struct Decoration {
 
 pub struct Parsed {
     pub snapshot: MarkdownSnapshot,
+    pub theme: Theme,
     styles: Vec<(Range<usize>, Style)>,
     decorations: Vec<Decoration>,
 }
@@ -29,9 +31,11 @@ impl Parsed {
     pub fn new(source: &str, snapshot: MarkdownSnapshot, markdown: bool) -> Self {
         let mut parsed = Self {
             snapshot,
+            theme: theme::current_theme(),
             styles: Vec::new(),
             decorations: Vec::new(),
         };
+        let colors = palette();
         if !markdown {
             return parsed;
         }
@@ -49,7 +53,7 @@ impl Parsed {
                     parsed.styles.push((
                         range.clone(),
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(colors.heading)
                             .add_modifier(Modifier::BOLD),
                     ));
                     let count = raw.bytes().take_while(|b| *b == b'#').count();
@@ -81,7 +85,7 @@ impl Parsed {
                     parsed.styles.push((
                         range.clone(),
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(colors.link)
                             .add_modifier(Modifier::UNDERLINED),
                     ));
                     // Only conceal a simple inline link whose label is an exact source slice.
@@ -97,14 +101,18 @@ impl Parsed {
                     }
                 }
                 Event::Code(_) | Event::Start(Tag::CodeBlock(_)) => {
-                    parsed
-                        .styles
-                        .push((range, Style::default().fg(Color::Yellow)));
+                    parsed.styles.push((
+                        range,
+                        Style::default().fg(colors.code).bg(colors.code_background),
+                    ));
                 }
                 Event::Start(Tag::BlockQuote(_)) => {
-                    parsed
-                        .styles
-                        .push((range.clone(), Style::default().add_modifier(Modifier::DIM)));
+                    parsed.styles.push((
+                        range.clone(),
+                        Style::default()
+                            .fg(colors.quote)
+                            .add_modifier(Modifier::ITALIC),
+                    ));
                     let mut offset = range.start;
                     for line in raw.split_inclusive(['\n', '\r']) {
                         let prefix = line.len() - line.trim_start_matches(' ').len();
@@ -391,7 +399,7 @@ impl Projection {
             result
                 .positions
                 .insert(start, (result.rows.len() - 1, column));
-            let mut style = Style::default();
+            let mut style = theme::document_style();
             for (range, value) in &parsed.styles {
                 if overlaps(range, &(start..end)) {
                     style = style.patch(*value);

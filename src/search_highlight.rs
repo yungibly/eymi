@@ -1,7 +1,8 @@
 //! Search decoration for visible, source-mapped glyphs; no layout or edits.
 use std::ops::Range;
 
-use ratatui::style::{Color, Modifier, Style};
+use crate::theme::palette;
+use ratatui::style::{Modifier, Style};
 
 /// Apply search/selection styling to one visible glyph's source span.
 ///
@@ -41,8 +42,8 @@ pub fn style_match(
         });
     if active_match {
         return base
-            .fg(Color::Black)
-            .bg(Color::LightYellow)
+            .fg(palette().search_active_text)
+            .bg(palette().search_active)
             .remove_modifier(Modifier::REVERSED | Modifier::DIM)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     }
@@ -51,8 +52,8 @@ pub fn style_match(
     }
     if matched {
         return base
-            .fg(Color::White)
-            .bg(Color::DarkGray)
+            .fg(palette().search_text)
+            .bg(palette().search)
             .remove_modifier(Modifier::REVERSED | Modifier::DIM);
     }
     base.remove_modifier(Modifier::REVERSED)
@@ -65,6 +66,7 @@ fn overlaps(left: &Range<usize>, right: &Range<usize>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     #[test]
     fn every_visible_occurrence_gets_a_quiet_highlight_without_boundary_bleed() {
