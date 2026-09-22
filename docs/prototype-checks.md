@@ -126,6 +126,29 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- Everyday usability checkpoint, September 22, 2026: `cargo test --locked
+  --offline` passes 206 tests (56 core, 144 app/workspace and helpers, 3 CLI,
+  3 real PTY integration tests). The combined build, strict all-target Clippy,
+  formatting and whitespace checks pass. This is a local macOS result.
+- New coverage checks word movement/deletion, source formatting, indentation,
+  bounded/coalesced history, offset editor slices, word-wrap mappings, theme
+  contrast, outline offsets, command filtering/actions, go-to-line, tiny
+  modal behavior, CLI size limits and bounded external-change comparisons.
+  Integration review reproduced a one-tab navigation undo-group bug; both
+  synthetic workspace events and encoded F8 through a real PTY now verify
+  the fix. Current-tab mouse hits also end the typing group.
+- Final executable verification of source commit `9ff0c52`: both light and dark
+  runs pass all 75 assertions each across captures, keyboard protocol, Unicode
+  source edits, and workspace controls. Each retains 33 captures; 30 native PNGs
+  export successfully per theme. Three original Unicode-fixture PNG failures
+  per theme retain SVG/cells/raw traces and remain the known renderer limitation.
+  Source, undo and keyboard assertions still pass; full Unicode visual acceptance
+  remains false. All eight manifests match the final debug binary hash.
+  Artifacts are under ignored `target/visual-usability-final-dark/` and
+  `target/visual-usability-final-light/`. The coordinator inspected final light
+  writing and dark filtered-command captures, plus compact replacement and
+  workspace frames during review. Optimized `cargo build --release --locked
+  --offline`, release version output, and a 120×36 release snapshot also pass.
 - Compact UI/control-bar checkpoint: `cargo test --locked --offline` passes 148 tests: 37 core, 109 binary tests (including 7 terminal lifecycle tests), and 2 real PTY integration tests. Coordinator independently ran the combined suite, build, strict all-target Clippy, formatting, and whitespace checks after integrating the bar backgrounds and clipboard-feedback fixes.
 - New coverage includes compact/narrow geometry, pointer replacement and undo, field focus, persistent file and clipboard warnings, successful clipboard retry, full-width bar backgrounds without document bleed, paired field colors, partial terminal setup, idempotent panic/error cleanup, negotiated keyboard bytes, and restored termios. Clipboard tests use fakes; the PTY tests use temporary files.
 - Final executable runner: 52 assertions pass across the dark capture/protocol/Unicode-source suites, and 21 pass in the light capture suite. All 26 layout PNGs export successfully. Coordinator inspected the integrated 80×24 dark replacement and 42×16 light fallback frames, alongside the agent's wider and empty-field captures. Artifacts are under ignored `target/visual-final-dark/` and `target/visual-final-light/`; each manifest's binary hash matches the final built executable. The runner observed activation followed by backend-generated `ESC[13;2u`, moving result 2 to 1, and one cleanup pop before alternate-screen exit.

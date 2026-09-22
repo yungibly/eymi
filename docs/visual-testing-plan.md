@@ -1,5 +1,36 @@
 # Visual testing and a quieter interface
 
+## September 22 usability checkpoint
+
+The final integrated build at source commit `9ff0c52` uses paired sage light/dark
+palettes, a centered live writing column, word-aware prose wrapping, margin
+heading labels where space permits, a responsive documents/outline sidebar, and
+a compact filterable command palette. Source view, active-block disclosure,
+selection geometry, and literal code/table fallbacks remain source anchored.
+
+Both final theme runs pass 75 executable assertions each. The four suites cover
+normal/Find/Replace layouts, negotiated keyboard bytes, Unicode source fidelity,
+pointer/keyboard outline navigation, line jumps, theme commands, formatting,
+indentation, word-group undo, no-op tab command boundaries, tabs, paste and tiny
+palette fallback. Each theme retains 33 frames, of which 30 export as PNG. The
+three original combining-grapheme PNG failures and the backend's ZWJ-width limit
+remain explicit; this checkpoint does not claim full Unicode renderer acceptance.
+
+Final artifacts: `target/visual-usability-final-dark/` and
+`target/visual-usability-final-light/`. Every suite's binary hash matches the
+tested debug executable. The coordinator visually inspected the light 160×45
+writing surface and dark filtered command palette, plus compact 80×24 workspace
+and 42×16 replacement frames during integration. Visual review led to a shorter
+filtered palette, stable query placement, compact path context, and fewer repeated
+sidebar hints. See the [runner guide](../tools/tui-test/README.md) for replay.
+
+The production code also passes 206 tests, strict all-target Clippy, formatting,
+debug/release builds, and a release snapshot. Native terminal fonts, OS shortcut
+interception, clipboard delivery, IME, and other platforms remain separate from
+these local macOS checks. CI and Homebrew packaging were not part of this work.
+
+## Earlier investigation
+
 Decision and implementation record · September 20, 2026 · UI baseline: `27ef0f5`
 
 The user reports that the tabs/browser build works, but the interface is verbose and cumbersome. Screenshots were taken in Ghostty directly, without tmux or SSH. The early interaction sketch remains the visual direction. The sections below record the original findings and acceptance plan; the implementation record at the end distinguishes verified results from remaining limits.

@@ -34,6 +34,21 @@ coordinator runs the combined suite, build, strict Clippy, formatting and visual
 inspection after integrating all workstreams. Known emulator Unicode limits
 remain separate from application correctness.
 
+All three assigned workstreams have been integrated into `main` from their
+isolated worktrees. The coordinator also added CLI theme/snapshot controls,
+consistent command-line file limits, streaming disk-baseline comparisons,
+scrollable help, and real PTY tests of the new editing controls. A final review
+found that an already-active tab switch could bypass the typing-group boundary;
+the workspace event dispatcher now ends groups before consuming any non-typing
+event, with keyboard and pointer regressions. The combined 206 tests and exact
+strict lint/format/build checks pass. Implementer worktrees remain available as
+the historical handoff; final integrated code is in the main checkout.
+Final light/dark executable runs each pass 75 assertions, with 30 successful PNG
+exports and three known original-Unicode-fixture PNG failures per theme. Raw
+traces and SVG/cells remain available. The optimized release binary builds and
+renders successfully. The [verification record](prototype-checks.md#verification-record)
+contains artifact locations and the remaining native-terminal checks.
+
 This note records the two-agent implementation assignments, starting with the first working editing surface and followed by the find/clipboard checkpoint below. The [product plan](product-plan.md) and [technical plan](technical-plan.md) describe the broader direction.
 
 ## Confirmed product decisions
