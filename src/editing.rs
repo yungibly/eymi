@@ -336,8 +336,10 @@ pub fn enter(document: &mut Document) -> bool {
     if range.end > line.end
         || is_blank_container_line(&source[line.clone()])
         || snapshot.blocks.iter().any(|block| {
-            matches!(block.kind, BlockKind::Code | BlockKind::Html)
-                && block.range.start <= line.end
+            matches!(
+                block.kind,
+                BlockKind::Code | BlockKind::Html | BlockKind::Metadata
+            ) && block.range.start <= line.end
                 && block.range.end > line.start
         })
         || Parser::new_ext(&source[markdown::bom_len(source)..], markdown::options())

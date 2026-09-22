@@ -1,7 +1,7 @@
 use crate::{
     clipboard::{self, Clipboard},
     file_io::{ExternalChange, FileState},
-    projection::{Affinity, Parsed, Projection, safe_text},
+    projection::{Affinity, Fill, FillKind, Parsed, Projection, safe_text},
     search::{
         Action as SearchAction, Button as SearchButton, FieldDrag, FieldGlyph, FieldMap, Focus,
         Geometry as SearchGeometry, Search, contains,
@@ -82,6 +82,15 @@ const HELP_LINES: &[&str] = &[
     "Arrows/PageUp/PageDown scroll help. Esc closes help.",
 ];
 
+type LayoutKey = (
+    u64,
+    Vec<std::ops::Range<usize>>,
+    usize,
+    bool,
+    Theme,
+    crate::icons::IconSet,
+);
+
 #[derive(Debug, PartialEq, Eq)]
 enum Overlay {
     None,
@@ -126,7 +135,7 @@ pub struct App {
     message: String,
     message_is_error: bool,
     message_origin: MessageOrigin,
-    layout_key: Option<(u64, Selection, usize, bool, Theme)>,
+    layout_key: Option<LayoutKey>,
     editor_area: Rect,
     terminal_height: u16,
     terminal_width: u16,
@@ -719,9 +728,7 @@ impl App {
     fn vertical(&mut self, delta: isize, extend: bool) {
         let (row, col) = self.caret_position();
         let col = *self.preferred_column.get_or_insert(col);
-        let target_row = row
-            .saturating_add_signed(delta)
-            .min(self.projection.rows.len() - 1);
+        let target_row = self.projection.navigable_row(row, delta);
         let hit = self.projection.hit(target_row, col);
         self.move_to(hit.offset, extend);
         self.affinity = hit.affinity;
@@ -1326,6 +1333,7 @@ impl App {
         );
         if self.parsed.snapshot.revision != self.document.revision()
             || self.parsed.theme != theme::current_theme()
+            || self.parsed.icons != crate::icons::current()
         {
             self.parsed = Parsed::new(
                 self.document.text(),
@@ -1333,24 +1341,37 @@ impl App {
                 self.markdown,
             );
         }
+        // Layout depends on the selection only through what it discloses, so
+        // caret movement within a block or in source view reuses it.
+        let disclosed = if self.live {
+            self.parsed
+                .disclosed(self.document.text(), self.document.selection())
+        } else {
+            Vec::new()
+        };
         let key = (
             self.document.revision(),
-            self.document.selection(),
+            disclosed,
             self.viewport.width as usize,
             self.live,
             theme::current_theme(),
+            crate::icons::current(),
         );
-        if !self.dragging && self.layout_key != Some(key) {
-            self.projection = Projection::build(
-                self.document.text(),
-                &self.parsed,
-                self.document.selection(),
-                self.viewport.width as usize,
-                self.live,
-            );
-            self.layout_key = Some(key);
-            if let Some(screen_row) = self.anchor_screen_row.take() {
-                self.scroll = self.caret_position().0.saturating_sub(screen_row);
+        if !self.dragging {
+            if self.layout_key.as_ref() != Some(&key) {
+                self.projection = Projection::layout(
+                    self.document.text(),
+                    &self.parsed,
+                    &key.1,
+                    key.2,
+                    self.live,
+                );
+                self.layout_key = Some(key);
+                if let Some(screen_row) = self.anchor_screen_row.take() {
+                    self.scroll = self.caret_position().0.saturating_sub(screen_row);
+                }
+            } else {
+                self.anchor_screen_row = None;
             }
         }
         let (cursor_row, cursor_col) = self.caret_position();
@@ -1401,58 +1422,30 @@ impl App {
             .take(height)
             .enumerate()
         {
-            let visual_row = self.scroll + screen_row;
-            // Level labels live entirely in the prose margin and never become
-            // editable text or part of the source hit map.
-            if self.live && self.viewport.x.saturating_sub(area.x) >= 4 {
-                for block in &self.parsed.snapshot.blocks {
-                    if let eymi::BlockKind::Heading(level) = block.kind
-                        && self.projection.cursor(block.range.start).0 == visual_row
-                    {
-                        frame.render_widget(
-                            Paragraph::new(format!("h{level}"))
-                                .style(document_style().fg(palette().muted)),
-                            Rect::new(
-                                self.viewport.x - 3,
-                                self.viewport.y + screen_row as u16,
-                                2,
-                                1,
-                            ),
-                        );
-                    }
-                }
-            }
-            // Fenced/indented code keeps its literal text and alignment while
-            // the row-wide inset distinguishes it from surrounding prose.
-            if self.live
-                && self.parsed.snapshot.blocks.iter().any(|block| {
-                    block.kind == eymi::BlockKind::Code
-                        && block.range.start <= row.start
-                        && row.start < block.range.end
-                })
-            {
-                frame.render_widget(
-                    Block::default().style(document_style().bg(palette().code_background)),
-                    Rect::new(
-                        self.viewport.x,
-                        self.viewport.y + screen_row as u16,
-                        self.viewport.width,
-                        1,
-                    ),
-                );
+            let y = self.viewport.y + screen_row as u16;
+            let band = row.fill.as_ref().filter(|fill| fill.kind == FillKind::Band);
+            if let Some(fill) = &row.fill {
+                draw_fill(frame, area, self.viewport, fill, y);
             }
             for glyph in &row.glyphs {
                 let selected =
                     glyph.source.start < selection.end && selection.start < glyph.source.end;
+                let mut base = glyph.style;
+                // Glyphs on a surface take its color unless they carry their own.
+                if let Some(fill) = band
+                    && glyph.column as isize >= fill.from
+                    && base.bg == Some(palette().background)
+                {
+                    base = base.bg(fill.color);
+                }
                 let style = crate::search_highlight::style_match(
-                    glyph.style,
+                    base,
                     &glyph.source,
                     selected,
                     matches,
                     active,
                 );
                 let x = self.viewport.x + glyph.column as u16;
-                let y = self.viewport.y + screen_row as u16;
                 if x < self.viewport.right() {
                     frame.buffer_mut().set_stringn(
                         x,
@@ -1911,6 +1904,33 @@ impl App {
 
 fn body_top(height: u16) -> u16 {
     u16::from(height > 0)
+}
+
+/// Paint a row surface between the text column's margins; labels hanging
+/// into a margin too narrow for them are omitted.
+fn draw_fill(frame: &mut Frame, area: Rect, viewport: Rect, fill: &Fill, y: u16) {
+    let origin = viewport.x as isize + fill.from;
+    let left = origin.max(area.x as isize) as u16;
+    let right = viewport.right().min(area.right());
+    if left >= right {
+        return;
+    }
+    let page = palette().background;
+    let buffer = frame.buffer_mut();
+    let (symbol, style) = match fill.kind {
+        FillKind::Band => (" ", Style::default().bg(fill.color)),
+        FillKind::Lower => ("▄", Style::default().fg(fill.color).bg(page)),
+        FillKind::Upper => ("▀", Style::default().fg(fill.color).bg(page)),
+        FillKind::Rule => ("─", Style::default().fg(fill.color).bg(page)),
+    };
+    for x in left..right {
+        buffer[(x, y)].set_symbol(symbol).set_style(style);
+    }
+    if let Some((label, style)) = &fill.label
+        && origin >= area.x as isize
+    {
+        buffer.set_stringn(left, y, label, usize::from(right - left), *style);
+    }
 }
 
 fn draw_status_segment(frame: &mut Frame, x: u16, y: u16, text: &str, style: Style) {
@@ -2849,7 +2869,10 @@ mod tests {
             let mut app = App::new(source.into(), None, true);
             draw(&mut app, 80, 24);
             let (row, column) = checkbox_position(&app);
-            let column = column.saturating_add_signed(delta);
+            // The checkbox replaces its bullet, so nothing lies to its left.
+            let Some(column) = column.checked_add_signed(delta) else {
+                continue;
+            };
             let expected = app.projection.hit(row, column).offset;
             click_at(&mut app, row, column, true);
             assert_eq!(app.document.text(), source);
@@ -3163,7 +3186,7 @@ mod tests {
     fn snapshot_uses_real_rendered_cells_and_cr_status() {
         let mut app = App::new("first\r\n\r- [ ] **task**".into(), None, true);
         let live = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
-        assert!(live.contains("• ☐ task"));
+        assert!(live.contains("□ task"));
         key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
         let source = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
         assert!(source.contains("- [ ] **task**"));
@@ -4353,7 +4376,7 @@ mod tests {
             );
             assert_eq!(
                 source_cell(&app, &terminal, text.find("Heading").unwrap()).fg,
-                theme.palette().heading
+                theme.palette().headings[0]
             );
             assert_eq!(
                 source_cell(&app, &terminal, text.find("link").unwrap()).fg,

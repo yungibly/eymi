@@ -12,6 +12,8 @@ pub enum BlockKind {
     Table,
     Rule,
     Html,
+    /// Leading YAML front matter, delimited by `---` lines.
+    Metadata,
 }
 
 /// Original UTF-8 source range, as reported by the parser, rebased past a BOM.
@@ -41,8 +43,14 @@ pub struct MarkdownSnapshot {
     pub tasks: Vec<Task>,
 }
 
+/// GFM adds only alert kinds (`> [!NOTE]`) to block quotes; front matter
+/// keeps leading metadata from reading as a rule and a setext heading.
 pub fn options() -> Options {
-    Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH
+    Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_GFM
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
 }
 
 pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
@@ -69,6 +77,7 @@ pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
             Event::Start(Tag::BlockQuote(_)) => Some(BlockKind::Quote),
             Event::Start(Tag::Table(_)) => Some(BlockKind::Table),
             Event::Start(Tag::HtmlBlock) => Some(BlockKind::Html),
+            Event::Start(Tag::MetadataBlock(_)) => Some(BlockKind::Metadata),
             Event::Rule => Some(BlockKind::Rule),
             Event::TaskListMarker(checked) => {
                 if let Some(item_range) = items.last() {
@@ -98,7 +107,7 @@ pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
     snapshot
 }
 
-pub(crate) fn bom_len(text: &str) -> usize {
+pub fn bom_len(text: &str) -> usize {
     if text.starts_with('\u{feff}') {
         '\u{feff}'.len_utf8()
     } else {
@@ -158,6 +167,24 @@ mod tests {
             assert!(source.is_char_boundary(block.range.end));
             assert!(block.range.end <= source.len());
         }
+    }
+
+    #[test]
+    fn front_matter_is_one_atomic_block_rather_than_a_rule_and_heading() {
+        let source = "---\ntitle: Plan\ntags: [a]\n---\n\n# Real heading\n";
+        let blocks = analyze(source, 0).blocks;
+        assert_eq!(blocks[0].kind, BlockKind::Metadata);
+        assert_eq!(
+            &source[blocks[0].range.clone()],
+            "---\ntitle: Plan\ntags: [a]\n---"
+        );
+        assert!(!blocks.iter().any(|b| b.kind == BlockKind::Rule));
+        let headings: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b.kind, BlockKind::Heading(_)))
+            .collect();
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].kind, BlockKind::Heading(1));
     }
 
     #[test]

@@ -42,7 +42,14 @@ fn run() -> io::Result<()> {
         cli::Action::Edit(options) => options,
     };
     theme::set_theme(options.theme.unwrap_or_default());
-    icons::set(options.icons.unwrap_or_default());
+    // Headless snapshots stay reproducible regardless of the outer terminal.
+    icons::set(options.icons.unwrap_or_else(|| {
+        if options.snapshot {
+            icons::IconSet::Plain
+        } else {
+            icons::IconSet::detect(|name| std::env::var(name).ok())
+        }
+    }));
     let mut app = workspace::Workspace::open(options.path)?;
     if options.source {
         app.editor_mut().live = false;

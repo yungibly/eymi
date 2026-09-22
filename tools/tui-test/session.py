@@ -58,8 +58,11 @@ class Session:
         self.size = size
         self.app_args = list(app_args)
         self.env = dict(os.environ)
-        # The execution shell commonly sets NO_COLOR=1 and TERM=dumb.
-        self.env.pop("NO_COLOR", None)
+        # The execution shell commonly sets NO_COLOR=1 and TERM=dumb. Variables
+        # describing the outer terminal would not describe the emulated one.
+        for name in ["NO_COLOR", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "KITTY_WINDOW_ID",
+                     "WEZTERM_EXECUTABLE", "GHOSTTY_RESOURCES_DIR", "TMUX"]:
+            self.env.pop(name, None)
         self.env.update(TUI_TEST_HOME=str(self.runtime), TERM="xterm-256color",
                         XDG_CONFIG_HOME=str(self.runtime / "config"),
                         XDG_STATE_HOME=str(self.runtime / "state"),
