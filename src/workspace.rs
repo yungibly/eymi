@@ -717,19 +717,11 @@ impl Workspace {
             self.sidebar
                 .draw(frame, sidebar_area, &labels, self.active, caret);
             frame.render_widget(
-                Paragraph::new(clipped(" F2 Commands", sidebar_width as usize))
-                    .style(chrome_muted()),
+                Block::default().style(chrome_style()),
                 Rect::new(area.x, area.bottom() - 1, sidebar_width, 1),
             );
         }
         if area.height >= 10 && area.width > 0 {
-            let title = format!(
-                " Marklane  ·  {}",
-                self.editor().path().map_or_else(
-                    || self.label(self.active).trim().to_owned(),
-                    |path| safe_text(&path.display().to_string())
-                )
-            );
             let hint = "F2 Commands · F9 Sidebar ";
             let hint_width = UnicodeWidthStr::width(hint) as u16;
             let title_width = if area.width >= 60 {
@@ -737,6 +729,14 @@ impl Workspace {
             } else {
                 area.width
             };
+            let prefix = " Marklane  ·  ";
+            let context_width =
+                usize::from(title_width).saturating_sub(UnicodeWidthStr::width(prefix));
+            let context = self.editor().path().map_or_else(
+                || self.label(self.active).trim().to_owned(),
+                |path| compact_path(path, context_width),
+            );
+            let title = format!("{prefix}{context}");
             frame.render_widget(
                 Block::default().style(chrome_style()),
                 Rect::new(area.x, area.y + 1, area.width, 1),
@@ -860,6 +860,29 @@ pub(crate) fn popup(frame: &mut Frame, title: &str, body: &str) {
             .block(Block::default().borders(Borders::ALL).title(title)),
         rect,
     );
+}
+
+/// Keep the basename visible; spend spare header space on its nearest parent.
+fn compact_path(path: &Path, width: usize) -> String {
+    let name = safe_text(
+        &path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy(),
+    );
+    let name_width = UnicodeWidthStr::width(name.as_str());
+    let parent = path.parent().and_then(Path::file_name);
+    if name_width + 2 <= width
+        && let Some(parent) = parent
+    {
+        let parent = clipped(
+            &safe_text(&parent.to_string_lossy()),
+            width - name_width - 1,
+        );
+        format!("{parent}/{name}")
+    } else {
+        clipped(&name, width)
+    }
 }
 
 pub(crate) fn clipped(text: &str, max: usize) -> String {
@@ -1784,5 +1807,93 @@ mod tests {
         assert!(!app.sidebar.focused);
         plain(&mut app, 'x');
         assert!(app.editor().document.text().starts_with("x#"));
+    }
+    #[test]
+    fn filtered_palette_shrinks_below_a_stable_query_and_only_visible_rows_activate() {
+        for (width, height) in [(42, 16), (80, 24), (120, 36), (160, 45)] {
+            let mut app = Workspace::open(None).unwrap();
+            key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+            let mut initial = draw(&mut app, width, height);
+            let query_y = initial.get_cursor_position().unwrap().y;
+            let old_second = app.palette.as_ref().unwrap().hits[1].0;
+            let old_bottom = initial
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .filter(|cell| cell.symbol() == "│")
+                .count();
+            app.handle_event(Event::Paste("new".into()));
+            let mut filtered = draw(&mut app, width, height);
+            assert_eq!(filtered.get_cursor_position().unwrap().y, query_y);
+            let hits = &app.palette.as_ref().unwrap().hits;
+            assert_eq!(hits.len(), 1);
+            let hit = hits[0].0;
+            assert_eq!(
+                filtered.backend().buffer()[(hit.x - 1, hit.bottom())].symbol(),
+                "└"
+            );
+            assert!(
+                filtered
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .filter(|cell| cell.symbol() == "│")
+                    .count()
+                    < old_bottom
+            );
+            click_rect(&mut app, old_second);
+            assert_eq!(app.tabs.len(), 1);
+            for (x, y) in [
+                (hit.x - 1, hit.y),
+                (hit.right(), hit.y),
+                (hit.x, hit.bottom()),
+            ] {
+                click_rect(&mut app, Rect::new(x, y, 1, 1));
+                assert_eq!(app.tabs.len(), 1);
+            }
+            ctrl(&mut app, 'a');
+            app.handle_event(Event::Paste("no matching command".into()));
+            let mut empty = draw(&mut app, width, height);
+            assert_eq!(empty.get_cursor_position().unwrap().y, query_y);
+            assert!(app.palette.as_ref().unwrap().hits.is_empty());
+            ctrl(&mut app, 'a');
+            key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+            let mut expanded = draw(&mut app, width, height);
+            assert_eq!(expanded.get_cursor_position().unwrap().y, query_y);
+            assert!(app.palette.as_ref().unwrap().hits.len() > 1);
+            app.handle_event(Event::Paste("new".into()));
+            draw(&mut app, width, height);
+            let hit = app.palette.as_ref().unwrap().hits[0].0;
+            click_rect(&mut app, hit);
+            assert_eq!(app.tabs.len(), 2);
+            assert!(app.palette.is_none());
+        }
+    }
+
+    #[test]
+    fn go_to_line_uses_a_compact_prompt_at_the_same_query_anchor() {
+        let mut app = Workspace::open(None).unwrap();
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        let mut initial = draw(&mut app, 80, 24);
+        let query_y = initial.get_cursor_position().unwrap().y;
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        ctrl(&mut app, 'g');
+        let mut line = draw(&mut app, 80, 24);
+        let cursor = line.get_cursor_position().unwrap();
+        assert_eq!(cursor.y, query_y);
+        assert_eq!(
+            line.backend().buffer()[(cursor.x - 2, query_y - 1)].symbol(),
+            "┌"
+        );
+        assert_eq!(
+            line.backend().buffer()[(cursor.x - 2, query_y + 4)].symbol(),
+            "└"
+        );
+        app.handle_event(Event::Paste("1".into()));
+        draw(&mut app, 80, 24);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.palette.is_none());
     }
 }

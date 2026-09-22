@@ -196,7 +196,7 @@ impl Sidebar {
                 if self.focused {
                     " ↑↓ Select · Enter · Esc"
                 } else {
-                    " F9 Focus · F2 Commands"
+                    " F9 Focus"
                 },
                 area.width.saturating_sub(1) as usize,
             ))

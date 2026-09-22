@@ -254,10 +254,17 @@ impl Palette {
             return;
         }
         let width = area.width.saturating_sub(4).clamp(12, 76).min(area.width);
-        let height = area.height.saturating_sub(2).clamp(5, 19).min(area.height);
+        let max_height = area.height.saturating_sub(2).clamp(5, 19).min(area.height);
+        let commands = self.matches();
+        let height = if self.line_mode {
+            6.min(max_height)
+        } else {
+            (commands.len() as u16 + 4).clamp(5, max_height)
+        };
         let rect = Rect::new(
             area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 3,
+            // Keep the query anchored while the list grows or shrinks below it.
+            area.y + (area.height - max_height) / 3,
             width,
             height,
         );
@@ -334,7 +341,6 @@ impl Palette {
                 Rect::new(field.x, field.y + 2, field.width, 1),
             );
         } else {
-            let commands = self.matches();
             self.selected = self.selected.min(commands.len().saturating_sub(1));
             let start = self.selected.saturating_sub(available.saturating_sub(1));
             for (row, command) in commands.iter().skip(start).take(available).enumerate() {
@@ -376,7 +382,11 @@ impl Palette {
         }
         frame.render_widget(
             Paragraph::new(clipped(
-                " ↑↓ Select · Enter Run · Esc Close",
+                if self.line_mode {
+                    " Enter Jump · Esc Close"
+                } else {
+                    " ↑↓ Select · Enter Run · Esc Close"
+                },
                 rect.width.saturating_sub(2) as usize,
             ))
             .style(chrome_muted()),
