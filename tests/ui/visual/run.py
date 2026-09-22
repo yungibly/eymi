@@ -593,13 +593,228 @@ def themes(session):
     session.check(not any(c["png_error"] for c in session.captures), "Imported-theme captures all export as PNG")
 
 
+def workflows(session):
+    """Verify navigation and line editing through the real executable and PTY."""
+    source = session.original_bytes
+    lines = source.splitlines(keepends=True)
+    name = session.fixture.name
+
+    def count(title, expected):
+        text = session.state()["text"]
+        session.check(re.search(re.escape(title) + r"\s*·\s*" + str(expected) + r"\b", text),
+                      f"{title} shows exactly {expected} choices", text=text)
+
+    def chooser(key, query=""):
+        session.key(key)
+        if query:
+            session.call("type", query)
+        session.settle()
+
+    def go(line):
+        session.key("Ctrl+g")
+        session.call("type", str(line))
+        session.key("Enter")
+
+    def position(line, column=1):
+        text = session.state()["text"]
+        session.check(f"Ln {line}, Col {column}" in text,
+                      f"Source caret is at line {line}, column {column}", text=text)
+
+    def save(expected, message):
+        session.key("Ctrl+s")
+        actual = session.fixture.read_bytes()
+        session.check(actual == expected, message, expected=expected.decode(), actual=actual.decode())
+        session.key("Escape")
+
+    def select_alpha():
+        go(3)
+        for _ in "Alpha":
+            session.key("Shift+Right")
+        position(3, 6)
+
+    def selection_survived(message):
+        session.paste("REPLACED")
+        save(source.replace(b"Alpha", b"REPLACED", 1), message)
+        session.key("Ctrl+z")
+        save(source, "One undo restores exact source after the selection check")
+
+    # The CLI click emits down and release. A count of two catches double activation.
+    state, cells = session.capture("01-workflows-160x45")
+    header_y = min(c["y"] for c in cells)
+    plus = [c for c in cells if c["y"] == header_y and c["char"] == "+"]
+    session.check(len(plus) == 1, "Exactly one plain plus button is visible in the tab row")
+    session.call("mouse", "click", plus[0]["x"], plus[0]["y"])
+    session.settle()
+    chooser("F10")
+    count("Open documents", 2)
+    session.key("Escape")
+    session.check("Untitled 2.md" in session.state()["text"], "Plus activates one new untitled document")
+    draft = "Unsaved workflow draft"
+    session.paste(draft)
+    chooser("F10")
+    count("Open documents", 2)
+    text = session.state()["text"]
+    session.check("* Untitled 2.md" in text and "Unsaved document" in text and name in text,
+                  "Document picker includes dirty unsaved and file-backed tabs")
+    session.capture("02-documents-dirty-unsaved")
+    session.key("Escape")
+
+    # Exercise path filtering using an independently created scratch document.
+    other = session.output / "project-beta" / "note.md"
+    other.parent.mkdir()
+    other_source = b"# Secondary document\n\nSecond file stays exact.\n"
+    other.write_bytes(other_source)
+    session.key("Ctrl+o")
+    session.key("Tab")
+    session.paste(str(other))
+    session.key("Enter")
+    session.check("Secondary document" in session.state()["text"], "Browser opens the scratch path as a third tab")
+    chooser("F10", "unt2")
+    count("Open documents", 1)
+    session.key("Enter")
+    session.check(draft in session.state()["text"], "Fuzzy document-name filtering switches to the unsaved draft")
+    chooser("F10", "pjbt nmd")
+    count("Open documents", 1)
+    session.check("project-beta" in session.state()["text"], "Fuzzy path and name tokens expose the matching path")
+    session.capture("03-document-path-filter")
+    session.key("Escape")
+    session.check(draft in session.state()["text"], "Canceling a different document choice preserves the active draft")
+    chooser("F10", "pjbt nmd")
+    session.key("Enter")
+    session.check("Second file stays exact." in session.state()["text"], "Enter commits the filtered document switch")
+    chooser("F10")
+    count("Open documents", 3)
+    session.key("Escape")
+
+    # At each layout, use actual fuzzy choices and check the resulting source caret.
+    planning_line = lines.index(b"## Planning checkpoint\n") + 1
+    for width, height in [(42, 16), (80, 24), (160, 45)]:
+        session.call("resize", width, height)
+        chooser("F10", "wfmd")
+        count("Open documents", 1)
+        session.capture(f"04-document-picker-{width}x{height}")
+        session.key("Enter")
+        session.check("Alpha line" in session.state()["text"], f"Document acceptance reaches the fixture at {width} columns")
+        go(3)
+        chooser("F11", "plnchkpt")
+        count("Headings", 1)
+        session.check(f"H2 · line {planning_line}" in session.state()["text"],
+                      f"Heading picker shows source level and line at {width} columns")
+        session.capture(f"05-heading-picker-{width}x{height}")
+        session.key("Enter")
+        position(planning_line)
+        save(source, f"Picker navigation preserves every source byte at {width} columns")
+
+    # Cancellation preserves the precise selected range, not just visible text.
+    session.call("resize", 80, 24)
+    for key, query, title in [("F10", "unt2", "Open documents"), ("F11", "fnlchkpt", "Headings")]:
+        select_alpha()
+        chooser(key, query)
+        count(title, 1)
+        session.key("Down")
+        session.key("Escape")
+        position(3, 6)
+        selection_survived(f"Canceling {title} preserves the exact Alpha source selection")
+
+    chooser("F11", "impostor")
+    count("Headings", 0)
+    session.check("No matches" in session.state()["text"], "Fenced Markdown does not become a heading choice")
+    session.key("Enter")
+    count("Headings", 0)
+    session.key("Escape")
+    chooser("F11", "stxtwpt")
+    count("Headings", 1)
+    setext_line = lines.index(b"Setext waypoint\n") + 1
+    session.check(f"H2 · line {setext_line}" in session.state()["text"], "Setext heading reports its original source line")
+    session.key("Enter")
+    position(setext_line)
+    save(source, "Semantic heading navigation leaves source and fenced text unchanged")
+
+    for key, query, title in [("F10", "unt2", "documents"), ("F11", "fnlchkpt", "headings")]:
+        go(3)
+        chooser(key, query)
+        session.call("resize", 20, 4)
+        session.call("mouse", "click", 5, 2)
+        session.key("Enter")
+        text = session.state()["text"]
+        session.check("Resize to choose" in text, f"Tiny {title} picker rejects pointer and Enter acceptance")
+        session.capture(f"06-tiny-{title}-20x4")
+        session.key("Escape")
+        session.call("resize", 80, 24)
+        position(3)
+        save(source, f"Tiny {title} picker cannot switch or edit the source")
+
+    # Source mode gives line selection an unambiguous physical-row boundary.
+    session.key("Ctrl+e")
+    session.check("SOURCE" in session.state()["text"], "Line workflows run in source mode")
+
+    def edited_lines(operation, selected):
+        start, end = 3, 5 if selected else 4  # Bravo; optionally Charlie, excluding Delta.
+        block = lines[start:end]
+        expected = list(lines)
+        if operation == "up":
+            expected[start - 1:end] = block + lines[start - 1:start]
+        elif operation == "down":
+            expected[start:end + 1] = lines[end:end + 1] + block
+        elif operation == "above":
+            expected[start:start] = block
+        else:
+            expected[end:end] = block
+        return b"".join(expected)
+
+    commands = [
+        ("up", "Alt+Up", "Move lines up"),
+        ("down", "Alt+Down", "Move lines down"),
+        ("above", "Alt+Shift+Up", "Duplicate lines above"),
+        ("below", "Alt+Shift+Down", "Duplicate lines below"),
+    ]
+    for selected in [False, True]:
+        for operation, shortcut, command in commands:
+            go(4)
+            if selected:
+                session.key("Shift+Down")
+                session.key("Shift+Down")
+                session.key("F2")
+                session.call("type", command)
+                session.key("Enter")
+            else:
+                session.key(shortcut)
+            description = f"{'Selected lines via palette' if selected else 'Current line via ' + shortcut}: {operation}"
+            save(edited_lines(operation, selected), description + " saves exact source bytes")
+            if selected:
+                session.capture(f"07-selected-lines-{operation}-80x24")
+            session.key("Ctrl+z")
+            save(source, description + " is restored by one Undo")
+
+    # Leave a single clean document so the common runner can verify normal exit.
+    chooser("F10", "unt2")
+    session.key("Enter")
+    session.check(draft in session.state()["text"], "Unsaved draft survives all navigation and source editing")
+    session.key("Ctrl+w")
+    session.call("expect", "text", "Unsaved document", "--timeout", 3000)
+    session.key("n")
+    chooser("F10", "pjbt nmd")
+    session.key("Enter")
+    session.key("Ctrl+w")
+    chooser("F10")
+    count("Open documents", 1)
+    session.key("Escape")
+    save(source, "All workflows finish with the exact original fixture bytes")
+    session.check(other.read_bytes() == other_source, "Path-filtered secondary scratch document is unchanged")
+    session.key("Ctrl+e")
+    session.key("Ctrl+Home")
+    session.call("resize", 160, 45)
+    session.capture("08-finished-workflows-160x45")
+    session.check(not any(c["png_error"] for c in session.captures), "All ASCII workflow captures export native PNGs")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tool", required=True)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="enhanced")
-    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome"], default="all")
+    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
     parser.add_argument("--theme", choices=["dark", "light"],
                         help="Editor theme; omitted for compatibility with older binaries")
@@ -609,22 +824,22 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(__file__, args.output / "scenario.py")
     shutil.copyfile(HELPER, args.output / "session.py")
-    for fixture in ["acceptance.md", "screenshots.md", "writing.md", "chrome.md"]:
+    for fixture in ["acceptance.md", "screenshots.md", "writing.md", "chrome.md", "workflows.md"]:
         shutil.copyfile(Path(__file__).with_name(fixture), args.output / fixture)
     shutil.copyfile(ROOT / "third_party/iterm2-themes/palettes.json" if (ROOT / "third_party/iterm2-themes/palettes.json").exists() else Path(__file__).with_name("palettes.json"), args.output / "palettes.json")
     write_json(args.output / "invocation.json", vars(args) | {"output": str(args.output.resolve())})
-    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome"] if args.suite == "all" else [args.suite]
+    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows"] if args.suite == "all" else [args.suite]
     for suite in suites:
-        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md", "chrome": "chrome.md"}.get(suite, "screenshots.md")
+        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md", "chrome": "chrome.md", "workflows": "workflows.md"}.get(suite, "screenshots.md")
         app_args = ["--theme", args.theme] if args.theme else []
         if args.icons:
             app_args.extend(["--icons", args.icons])
         session = Session(args.tool, args.binary, args.output / suite,
                           Path(__file__).with_name(fixture), args.palette,
-                          size=(160, 45) if suite in ("workspace", "themes", "reliability", "chrome") else (80, 24), app_args=app_args, font=args.font)
+                          size=(160, 45) if suite in ("workspace", "themes", "reliability", "chrome", "workflows") else (80, 24), app_args=app_args, font=args.font)
         try:
             session.start()
-            title = "Chrome acceptance" if suite == "chrome" else "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
+            title = "Workflow acceptance" if suite == "workflows" else "Chrome acceptance" if suite == "chrome" else "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
             session.call("expect", "text", title, "--timeout", 3000)
             if suite == "captures":
                 captures(session)
@@ -638,6 +853,8 @@ def main():
                 reliability(session)
             elif suite == "chrome":
                 chrome(session)
+            elif suite == "workflows":
+                workflows(session)
             else:
                 unicode_and_edits(session)
             session.key("Escape")
