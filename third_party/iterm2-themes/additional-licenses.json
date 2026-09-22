@@ -1,0 +1,79 @@
+[
+  {
+    "file": "licenses/altercation--solarized.txt",
+    "source": "https://github.com/altercation/solarized/blob/master/LICENSE",
+    "blob": "ee08d7e44f15108ef5359550399dad55955b56ca",
+    "sha256": "494aefdabf86acce06bd63001ad8aedad4ee38da23509d3f917d95aa3368b9a6",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/atom--one-dark-syntax.txt",
+    "source": "https://github.com/atom/one-dark-syntax/blob/master/LICENSE.md",
+    "blob": "4e47b02a28a95c1d3001e4b747ce0638f11475e1",
+    "sha256": "e1bd6bab503e4d7990504df1e646f6e7465a9096648304335e4c0b55c88f1f54",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/catppuccin--catppuccin.txt",
+    "source": "https://github.com/catppuccin/catppuccin/blob/main/LICENSE",
+    "blob": "006383b861d7a9b11ebbaf84ec679b0e3c189bac",
+    "sha256": "814096d2c34cc216c624738a49356f32b7237733b4f7edb0685f4e50ef5074ba",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/dracula--dracula-theme.txt",
+    "source": "https://github.com/dracula/dracula-theme/blob/main/LICENSE",
+    "blob": "539c60a65b75495af04d3a28f887d89b50d919b2",
+    "sha256": "38b806a7e799cca4e9821e6f8d65cf0d8bfaaddbe454b41f12e5baad52d310f1",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/folke--tokyonight.nvim.txt",
+    "source": "https://github.com/folke/tokyonight.nvim/blob/main/LICENSE",
+    "blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "spdx": "Apache-2.0"
+  },
+  {
+    "file": "licenses/hukl--Smyck-Color-Scheme.txt",
+    "source": "https://github.com/hukl/Smyck-Color-Scheme/blob/master/LICENSE",
+    "blob": "5d4448cea2daa5d17a45f0d65a1c6eb80938b5ee",
+    "sha256": "c9716621dc1ec358b240a3e923d2c38ac08edcd1d898b7398c3882bd6b9ccf5a",
+    "spdx": "NOASSERTION"
+  },
+  {
+    "file": "licenses/mhallendal--spacedust-theme.txt",
+    "source": "https://github.com/hallski/spacedust-theme/blob/main/LICENSE",
+    "blob": "a05bcdf8dabec02d29b7de6a4420a8111fc65e96",
+    "sha256": "024422361856b7d147f2f397fe83d97e7775b415c3e0a0a05b5c3d0cb9dc8d0f",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/nordtheme--nord.txt",
+    "source": "https://github.com/nordtheme/nord/blob/develop/license",
+    "blob": "996f8fb61226844c6bbd2167a8b1a118be10609f",
+    "sha256": "25ac8188d670bd2ad2ce2f4f55ab88573010ee9f7a4502543cb1eea1e2274f8a",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/sainnhe--gruvbox-material.txt",
+    "source": "https://github.com/sainnhe/gruvbox-material/blob/master/LICENSE",
+    "blob": "167e749cf9fbfdaf69690235ff23cf17eb58e31d",
+    "sha256": "1578c1d9fe713f0ee479ff822b82baddbd2dfecf1f247a3f72bbdae5e0162e7e",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/vic--rebecca-theme.txt",
+    "source": "https://github.com/vic/rebecca-theme/blob/master/LICENSE",
+    "blob": "4643589254d30b9835860c15155335521a34e938",
+    "sha256": "8751712fa6dd2b18d27c46d6b4344f91556f73eb80376e6169348d6f88d40784",
+    "spdx": "MIT"
+  },
+  {
+    "file": "licenses/morhetz--gruvbox-README.md",
+    "source": "https://github.com/morhetz/gruvbox/blob/master/README.md",
+    "blob": "008de69c071f2b783b8822739e0d6258dbde18c4",
+    "sha256": "6e6575904dc53bdfc5745ec3edcf019b3e44b43b9a96570d59a33465ed2b954c",
+    "spdx": "MIT (README declaration)"
+  }
+]
