@@ -365,6 +365,9 @@ def chrome(session):
     def saved_exact(message):
         session.key("Ctrl+s")
         session.check(session.fixture.read_bytes() == session.original_bytes, message)
+        # Save feedback intentionally includes its path; dismiss it before any
+        # idle-chrome uniqueness checks, preserving the document selection.
+        session.key("Escape")
 
     def idle(label, expect_outline=None, first_line=False):
         state, cells = session.capture(label)
