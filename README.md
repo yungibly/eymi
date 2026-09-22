@@ -52,15 +52,21 @@ Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/marklan
 | Alt+backtick | Toggle inline code |
 | Ctrl+] / Ctrl+[ | Indent / outdent source lines |
 | Tab with a selection / Shift+Tab | Indent / outdent source lines |
+| Alt+Up / Alt+Down | Move the current or selected source lines |
+| Alt+Shift+Up / Alt+Shift+Down | Duplicate source lines above / below |
 | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z | Undo / redo |
 
 Formatting wraps selected content or inserts a marker pair with the caret inside. Indent adds four spaces; outdent removes up to four spaces or one tab. A plain Tab at a caret inserts a literal tab. Enhanced terminals can also deliver Ctrl+I for italic; Alt+I and the palette avoid its legacy Tab ambiguity.
+
+Move and duplicate act on whole source lines, including every line touched by a selection except a final endpoint at the next line's start. The selection follows its text, and duplication selects the new copy. Each change is one undo step. Moving keeps the BOM, newline sequence, and final-newline presence; duplication uses a local line ending for the new separator. Edge moves are no-ops. These commands are also in F2 when a terminal intercepts modified arrows.
 
 Contiguous non-whitespace typing forms one undo group. Whitespace, navigation, saves, and other commands start a new group; paste, formatting, list continuation, and Replace All remain individual transactions. History retains at most 256 snapshots and 32 MiB across undo/redo, excluding the current document and saved baseline. Older history is evicted first; very large edited snapshots can exceed this budget and cannot retain an undo inverse. The editor preserves source bytes outside intentional edits, including BOM, line endings, and trailing whitespace.
 
 ## Workspace, search, and files
 
-Ctrl+N creates a Markdown tab. Click a tab or use F7/F8 or Ctrl+PageUp/PageDown to switch. Each tab retains its document, undo history, selection, view, and scroll position; clipboard contents are shared. Switching tabs closes Find. Ctrl+W closes the current tab and prompts for unsaved edits. Ctrl+Q checks every dirty tab before quitting; canceling keeps all tabs, including any earlier choices to discard. An unsaved tab has a `*` beside its name.
+Ctrl+N or the tab row's **+** button creates a Markdown tab. Click a tab or use F7/F8 or Ctrl+PageUp/PageDown to switch. Each tab retains its document, undo history, selection, view, and scroll position; clipboard contents are shared. Switching tabs closes Find. Ctrl+W closes the current tab and prompts for unsaved edits. Ctrl+Q checks every dirty tab before quitting; canceling keeps all tabs, including any earlier choices to discard. An unsaved tab has a `*` beside its name. The plus button yields space to the active label in very small windows.
+
+**F10** opens a searchable list of open documents, including unsaved tabs. Filter by filename or path; abbreviated letters match in order, and separate words can match the name and directory. **F11** searches Markdown headings, with level and source line to distinguish repeated names. Both are available from F2 as **Switch document** and **Go to heading**. Arrows choose a result, Enter accepts, and Escape keeps the original document and selection. Heading navigation uses the existing parser, so fenced code is excluded and no language server is required. These additions follow a [focused review of Neovim workflows](docs/lazyvim-research.md).
 
 Ctrl+O opens a directory browser with folders first and text-file candidates visible by default. Enter or click opens an entry; Backspace or the Up button goes to its parent directory. Tab switches between the list and an editable path, F2 toggles hidden files, and F5 toggles all file types. Opening an already open path selects its tab. Errors keep the current document available. Browser opens require UTF-8 text without NUL bytes and are limited to 8 MiB; a listing examines at most 2,048 directory entries, with direct paths available for omitted names.
 

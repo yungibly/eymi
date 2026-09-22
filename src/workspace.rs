@@ -1,4 +1,6 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
+mod matching;
+mod navigation;
 mod palette;
 mod persistence;
 mod picker;
@@ -65,8 +67,19 @@ struct Pending {
 }
 
 enum ChoiceMode {
-    Theme { original: Theme, themes: Vec<Theme> },
+    Theme {
+        original: Theme,
+        themes: Vec<Theme>,
+    },
     Recovery,
+    Documents {
+        numbers: Vec<usize>,
+    },
+    Headings {
+        number: usize,
+        revision: u64,
+        offsets: Vec<usize>,
+    },
 }
 struct Choice {
     picker: Picker,
@@ -372,6 +385,14 @@ impl Workspace {
                 self.open_palette(true);
                 return;
             }
+            Command::Documents => {
+                self.open_documents();
+                return;
+            }
+            Command::Headings => {
+                self.open_headings();
+                return;
+            }
             Command::Help => (KeyCode::F(1), KeyModifiers::NONE),
             Command::Quit => (KeyCode::Char('q'), KeyModifiers::CONTROL),
             Command::Undo => (KeyCode::Char('z'), KeyModifiers::CONTROL),
@@ -381,6 +402,10 @@ impl Workspace {
             Command::InlineCode => (KeyCode::Char('`'), KeyModifiers::ALT),
             Command::Indent => (KeyCode::Char(']'), KeyModifiers::CONTROL),
             Command::Outdent => (KeyCode::Char('['), KeyModifiers::CONTROL),
+            Command::MoveUp => (KeyCode::Up, KeyModifiers::ALT),
+            Command::MoveDown => (KeyCode::Down, KeyModifiers::ALT),
+            Command::DuplicateUp => (KeyCode::Up, KeyModifiers::ALT | KeyModifiers::SHIFT),
+            Command::DuplicateDown => (KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT),
             Command::Theme => {
                 self.open_themes();
                 return;
@@ -456,6 +481,29 @@ impl Workspace {
                     }
                 }
                 ChoiceMode::Recovery => self.recover_document(index),
+                ChoiceMode::Documents { numbers } => {
+                    if let Some(number) = numbers.get(index)
+                        && let Some(target) = self.tabs.iter().position(|tab| tab.number == *number)
+                    {
+                        self.switch(target);
+                    }
+                }
+                ChoiceMode::Headings {
+                    number,
+                    revision,
+                    offsets,
+                } => {
+                    if self.tabs[self.active].number == number
+                        && self.editor().document.revision() == revision
+                    {
+                        if let Some(&offset) = offsets.get(index) {
+                            self.editor_mut().jump_to_source(offset);
+                        }
+                    } else {
+                        self.editor_mut()
+                            .set_message("Document changed; reopen headings to choose a section.");
+                    }
+                }
             },
             ChoiceAction::Preview(index) => {
                 if let ChoiceMode::Theme { themes, .. } = &choice.mode
@@ -616,6 +664,14 @@ impl Workspace {
                     }
                     KeyCode::F(9) if key.modifiers.is_empty() => {
                         self.toggle_sidebar(true);
+                        return;
+                    }
+                    KeyCode::F(10) if key.modifiers.is_empty() => {
+                        self.open_documents();
+                        return;
+                    }
+                    KeyCode::F(11) if key.modifiers.is_empty() => {
+                        self.open_headings();
                         return;
                     }
                     _ => {}

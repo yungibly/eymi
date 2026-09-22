@@ -26,6 +26,10 @@ pub(super) struct Picker {
     footer: &'static str,
     ready: bool,
     hits: Vec<(Rect, usize)>,
+    fuzzy: bool,
+    details: bool,
+    empty_message: &'static str,
+    search_names: Vec<String>,
 }
 impl Picker {
     pub fn new(
@@ -42,9 +46,40 @@ impl Picker {
             footer,
             ready: false,
             hits: vec![],
+            fuzzy: false,
+            details: false,
+            empty_message: "No matches",
+            search_names: vec![],
         }
     }
+    pub fn navigation(mut self) -> Self {
+        self.fuzzy = true;
+        self.details = true;
+        self
+    }
+    pub fn empty_message(mut self, message: &'static str) -> Self {
+        self.empty_message = message;
+        self
+    }
+    pub fn search_names(mut self, names: Vec<String>) -> Self {
+        self.search_names = names;
+        self
+    }
     fn matches(&self) -> Vec<usize> {
+        if self.fuzzy {
+            return super::matching::ranked(
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (name, hint))| {
+                        (
+                            self.search_names.get(index).unwrap_or(name).as_str(),
+                            hint.as_str(),
+                        )
+                    }),
+                self.query.text(),
+            );
+        }
         let query = self.query.text().to_lowercase();
         self.entries
             .iter()
@@ -181,7 +216,10 @@ impl Picker {
         let max_height = area.height.saturating_sub(2).clamp(7, 20).min(area.height);
         let matches = self.matches();
         self.selected = self.selected.min(matches.len().saturating_sub(1));
-        let height = (matches.len() as u16 + 5).clamp(7, max_height);
+        let height = matches
+            .len()
+            .saturating_add(5)
+            .clamp(7, usize::from(max_height)) as u16;
         let rect = Rect::new(
             area.x + (area.width - width) / 2,
             area.y + (area.height - max_height) / 3,
@@ -239,6 +277,18 @@ impl Picker {
             field.y,
         ));
         let available = usize::from(height - 5);
+        if self.details
+            && let Some(&index) = matches.get(self.selected)
+        {
+            frame.render_widget(
+                Paragraph::new(clipped_suffix(
+                    &self.entries[index].1,
+                    usize::from(width - 4),
+                ))
+                .style(chrome_muted()),
+                Rect::new(rect.x + 2, rect.y + 2, width - 4, 1),
+            );
+        }
         let first = self.selected.saturating_sub(available.saturating_sub(1));
         for (row, &index) in matches.iter().skip(first).take(available).enumerate() {
             let row_rect = Rect::new(rect.x + 1, rect.y + 3 + row as u16, width - 2, 1);
@@ -268,7 +318,15 @@ impl Picker {
         }
         if matches.is_empty() {
             frame.render_widget(
-                Paragraph::new(" No matches").style(chrome_muted()),
+                Paragraph::new(format!(
+                    " {}",
+                    if self.entries.is_empty() {
+                        self.empty_message
+                    } else {
+                        "No matches"
+                    }
+                ))
+                .style(chrome_muted()),
                 Rect::new(rect.x + 1, rect.y + 3, width - 2, 1),
             );
         }
@@ -288,9 +346,63 @@ impl Picker {
     }
 }
 
+fn clipped_suffix(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut remaining = width - 1;
+    let mut start = text.len();
+    for (index, grapheme) in text.grapheme_indices(true).rev() {
+        let cells = UnicodeWidthStr::width(grapheme);
+        if cells > remaining {
+            break;
+        }
+        remaining -= cells;
+        start = index;
+    }
+    format!("…{}", &text[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_path_details_keep_the_distinguishing_tail_on_grapheme_boundaries() {
+        let path = "/shared/very-long-project-parent/alpha/docs/界e\u{301}.md";
+        let text = clipped_suffix(path, 24);
+        assert!(text.ends_with("alpha/docs/界e\u{301}.md"));
+        assert!(UnicodeWidthStr::width(text.as_str()) <= 24);
+        assert_eq!(clipped_suffix(path, 0), "");
+    }
+
+    #[test]
+    fn large_entry_counts_stay_within_terminal_geometry_and_accept_visible_results() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let entries = (0..65_536)
+            .map(|index| (format!("Heading {index}"), String::new()))
+            .collect();
+        let mut picker = Picker::new("Headings", "Enter Choose", entries, 65_535).navigation();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| picker.draw(frame)).unwrap();
+        assert!(picker.ready);
+        assert!(
+            picker
+                .hits
+                .iter()
+                .all(|(rect, _)| rect.right() <= 80 && rect.bottom() <= 24)
+        );
+        assert!(matches!(
+            picker.handle(Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Action::Accept(65_535)
+        ));
+    }
     #[test]
     fn bounded_query_can_replace_a_full_selection_without_splitting_graphemes() {
         let mut picker = Picker::new("Test", "", vec![], 0);

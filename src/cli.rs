@@ -23,6 +23,8 @@ F2 / Ctrl+P Commands · F9 Outline · F1 Help
 Ctrl+N New · Ctrl+O Open · Ctrl+W Close tab · Ctrl+Q Quit
 Ctrl+S Save · F4 Save As · F5 Reload · Ctrl+E / F6 Live/source
 F7/F8 or Ctrl+PageUp/PageDown switches tabs.
+F10 Switch document · F11 Go to heading · Alt+Up/Down Move lines
+Alt+Shift+Up/Down Duplicate lines · F2 also exposes these commands
 Ctrl+F Find · Ctrl+R Replace · F3/Shift+F3 Next/previous match
 Ctrl+Z Undo · Ctrl+Y Redo · Ctrl+C/X/V Copy/cut/paste
 
