@@ -1,6 +1,6 @@
 //! A bounded, single-directory browser. It never recursively scans a workspace.
 use crate::{
-    app::draw_field,
+    app::{chrome_active, chrome_muted, chrome_style, draw_field},
     clipboard::Clipboard,
     projection::safe_text,
     search::{FieldMap, Focus},
@@ -11,7 +11,6 @@ use marklane::Document;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use std::{
@@ -384,13 +383,17 @@ impl Browser {
         self.ready = area.width >= 12 && area.height >= 9;
         if !self.ready {
             frame.render_widget(Clear, area);
-            frame.render_widget(Paragraph::new("Open: enlarge window. Esc cancels."), area);
+            frame.render_widget(
+                Paragraph::new("Open: enlarge window. Esc cancels.").style(chrome_style()),
+                area,
+            );
             return;
         }
         let popup = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Block::default()
+                .style(chrome_style())
                 .borders(Borders::ALL)
                 .title(" Open file · 8 MiB maximum "),
             popup,
@@ -426,9 +429,12 @@ impl Browser {
             if x + cells > inner.right() {
                 break;
             }
-            frame
-                .buffer_mut()
-                .set_string(x, inner.y + 1, &label, Style::default().fg(Color::Cyan));
+            frame.buffer_mut().set_string(
+                x,
+                inner.y + 1,
+                &label,
+                chrome_style().fg(crate::theme::palette().accent),
+            );
             self.hits.push((Rect::new(x, inner.y + 1, cells, 1), hit));
             x += cells + 1;
         }
@@ -454,11 +460,11 @@ impl Browser {
                 if entry.directory { "/" } else { "" }
             );
             let style = if index == self.selected && !self.path_focus {
-                Style::default().add_modifier(Modifier::REVERSED)
+                chrome_active()
             } else if entry.directory {
-                Style::default().fg(Color::Cyan)
+                chrome_style().fg(crate::theme::palette().accent)
             } else {
-                Style::default()
+                chrome_style()
             };
             let rect = Rect::new(inner.x, inner.y + 2 + row as u16, inner.width, 1);
             frame.render_widget(Paragraph::new(clipped(&label, width)).style(style), rect);
@@ -466,12 +472,12 @@ impl Browser {
         }
         if inner.height >= 4 {
             frame.render_widget(
-                Paragraph::new(clipped(&safe_text(&self.message), width)),
+                Paragraph::new(clipped(&safe_text(&self.message), width)).style(chrome_muted()),
                 Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
             );
             frame.render_widget(
                 Paragraph::new("Tab: path/list · F2: hidden · F5: all · Esc: close")
-                    .style(Style::default().add_modifier(Modifier::DIM)),
+                    .style(chrome_muted()),
                 Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
             );
         }

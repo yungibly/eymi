@@ -1,16 +1,22 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
+mod palette;
+mod sidebar;
 use crate::{
     app::{App, chrome_active, chrome_muted, chrome_style},
     browser::{Action as BrowserAction, Browser},
     clipboard::Clipboard,
     projection::safe_text,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
+use palette::{Action as PaletteAction, Command, Palette};
 use ratatui::{
     Frame,
     layout::Rect,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use sidebar::{Sidebar, Target};
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -56,6 +62,10 @@ pub struct Workspace {
     pending: Option<Pending>,
     browser: Option<Browser>,
     tab_hits: Vec<(Rect, usize)>,
+    sidebar: Sidebar,
+    palette: Option<Palette>,
+    area: Rect,
+    layout_valid: bool,
     pub should_exit: bool,
 }
 
@@ -74,6 +84,10 @@ impl Workspace {
             pending: None,
             browser: None,
             tab_hits: vec![],
+            sidebar: Sidebar::default(),
+            palette: None,
+            area: Rect::new(0, 0, 80, 24),
+            layout_valid: false,
             should_exit: false,
         })
     }
@@ -97,7 +111,9 @@ impl Workspace {
         }
         self.editor_mut().deactivate();
         self.active = index;
+        self.sidebar.selected = index;
         self.tab_hits.clear();
+        self.sidebar.invalidate();
     }
 
     fn new_tab(&mut self) {
@@ -109,7 +125,9 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
+        self.sidebar.selected = self.active;
         self.tab_hits.clear();
+        self.sidebar.invalidate();
     }
 
     fn open_browser(&mut self) {
@@ -126,6 +144,7 @@ impl Workspace {
             Err(error) => self.editor_mut().set_message(error.to_string()),
         }
         self.tab_hits.clear();
+        self.sidebar.invalidate();
     }
 
     fn open_path(&mut self, path: PathBuf) -> io::Result<()> {
@@ -143,7 +162,9 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
+        self.sidebar.selected = self.active;
         self.tab_hits.clear();
+        self.sidebar.invalidate();
         Ok(())
     }
 
@@ -201,6 +222,7 @@ impl Workspace {
         }
         self.active = self.active.min(self.tabs.len() - 1);
         self.tab_hits.clear();
+        self.sidebar.invalidate();
     }
 
     fn same_open_path(&mut self, path: &Path, except: Option<usize>) -> io::Result<Option<usize>> {
@@ -239,8 +261,146 @@ impl Workspace {
         }
     }
 
+    fn refresh_outline(&mut self) {
+        let tab = &self.tabs[self.active];
+        let markdown = tab.editor.is_markdown();
+        self.sidebar.refresh(
+            tab.number,
+            tab.editor.document.revision(),
+            markdown,
+            tab.editor.document.text(),
+        );
+    }
+
+    fn open_palette(&mut self, line_mode: bool) {
+        self.editor_mut().deactivate();
+        self.sidebar.focused = false;
+        self.palette = Some(Palette::new(line_mode));
+        self.tab_hits.clear();
+        self.sidebar.invalidate();
+    }
+
+    fn activate_sidebar(&mut self, target: Target) {
+        match target {
+            Target::Tab(index) if index < self.tabs.len() => self.switch(index),
+            Target::Heading(index) => {
+                if let Some(heading) = self.sidebar.headings.get(index) {
+                    let offset = heading.offset;
+                    self.editor_mut().jump_to_source(offset);
+                }
+            }
+            _ => {}
+        }
+        self.sidebar.focused = false;
+        self.sidebar.invalidate();
+    }
+
+    fn toggle_sidebar(&mut self, focus: bool) {
+        let visible = self.sidebar.visible(self.area);
+        if focus && visible && !self.sidebar.focused {
+            self.editor_mut().deactivate();
+            self.sidebar.focused = true;
+            self.sidebar.selected = self.active;
+        } else {
+            self.sidebar.preference = Some(!visible);
+            self.sidebar.focused = focus && !visible;
+            self.layout_valid = false;
+        }
+        if !self.sidebar.visible(self.area) {
+            self.sidebar.focused = false;
+        }
+        if self.sidebar.focused {
+            self.editor_mut().deactivate();
+        }
+        self.sidebar.invalidate();
+    }
+
+    fn run_command(&mut self, command: Command) {
+        self.palette = None;
+        self.sidebar.focused = false;
+        let (code, modifiers) = match command {
+            Command::New => (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Command::Open => (KeyCode::Char('o'), KeyModifiers::CONTROL),
+            Command::Save => (KeyCode::Char('s'), KeyModifiers::CONTROL),
+            Command::SaveAs => (KeyCode::F(4), KeyModifiers::NONE),
+            Command::Close => (KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::Find => (KeyCode::Char('f'), KeyModifiers::CONTROL),
+            Command::Replace => (KeyCode::Char('r'), KeyModifiers::CONTROL),
+            Command::View => (KeyCode::F(6), KeyModifiers::NONE),
+            Command::Sidebar => {
+                self.toggle_sidebar(false);
+                return;
+            }
+            Command::NextTab => (KeyCode::F(8), KeyModifiers::NONE),
+            Command::PreviousTab => (KeyCode::F(7), KeyModifiers::NONE),
+            Command::GoToLine => {
+                self.open_palette(true);
+                return;
+            }
+            Command::Help => (KeyCode::F(1), KeyModifiers::NONE),
+            Command::Quit => (KeyCode::Char('q'), KeyModifiers::CONTROL),
+            Command::Undo => (KeyCode::Char('z'), KeyModifiers::CONTROL),
+            Command::Redo => (KeyCode::Char('y'), KeyModifiers::CONTROL),
+            Command::Bold => (KeyCode::Char('b'), KeyModifiers::CONTROL),
+            Command::Italic => (KeyCode::Char('i'), KeyModifiers::ALT),
+            Command::InlineCode => (KeyCode::Char('`'), KeyModifiers::ALT),
+            Command::Indent => (KeyCode::Char(']'), KeyModifiers::CONTROL),
+            Command::Outdent => (KeyCode::Char('['), KeyModifiers::CONTROL),
+            Command::Theme => {
+                use crate::theme::{Theme, current_theme};
+                let next = match current_theme() {
+                    Theme::Dark => Theme::Light,
+                    Theme::Light => Theme::Dark,
+                };
+                self.editor_mut().set_theme(next);
+                return;
+            }
+        };
+        self.handle_event(Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
     pub fn handle_event(&mut self, event: Event) {
         if matches!(event, Event::Key(key) if key.kind == KeyEventKind::Release) {
+            return;
+        }
+        if let Event::Resize(width, height) = &event {
+            self.area = Rect::new(0, 0, *width, *height);
+            self.layout_valid = false;
+            self.tab_hits.clear();
+            self.sidebar.invalidate();
+            if !self.sidebar.visible(self.area) {
+                self.sidebar.focused = false;
+            }
+        }
+        if matches!(event, Event::Mouse(_)) && !self.layout_valid {
+            return;
+        }
+        if let Some(palette) = &mut self.palette {
+            match palette.handle(event) {
+                PaletteAction::Close => self.palette = None,
+                PaletteAction::Command(command) => self.run_command(command),
+                PaletteAction::Line(line) => {
+                    let source = self.editor().document.text();
+                    let mut current = 1;
+                    let mut offset = source.len();
+                    if line == 1 {
+                        offset = 0;
+                    } else {
+                        for (index, grapheme) in source.grapheme_indices(true) {
+                            if matches!(grapheme, "\r" | "\n" | "\r\n") {
+                                current += 1;
+                                if current == line {
+                                    offset = index + grapheme.len();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    self.palette = None;
+                    self.editor_mut().jump_to_source(offset);
+                }
+                PaletteAction::None => {}
+            }
             return;
         }
         if self.browser.is_some()
@@ -261,9 +421,15 @@ impl Workspace {
                 BrowserAction::None => {}
             }
             self.tab_hits.clear();
+            self.sidebar.invalidate();
             return;
         }
         if self.pending.as_ref().is_some_and(|pending| !pending.saving) {
+            if (self.area.width < 12 || self.area.height < 5)
+                && matches!(&event, Event::Key(key) if key.code != KeyCode::Esc)
+            {
+                return;
+            }
             if let Event::Key(key) = event {
                 if key.kind != KeyEventKind::Press
                     || !(key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
@@ -289,6 +455,7 @@ impl Workspace {
                 }
             } else if matches!(event, Event::Resize(..)) {
                 self.tab_hits.clear();
+                self.sidebar.invalidate();
                 self.forward(event);
             }
             return;
@@ -305,9 +472,64 @@ impl Workspace {
             }
             return;
         }
+        if self.editor().has_modal() && matches!(&event, Event::Mouse(_)) {
+            self.forward(event);
+            return;
+        }
         if self.editor().workspace_commands_allowed() {
             if let Event::Key(key) = &event {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::F(2) if key.modifiers.is_empty() => {
+                        self.open_palette(false);
+                        return;
+                    }
+                    KeyCode::Char('p') if ctrl => {
+                        self.open_palette(false);
+                        return;
+                    }
+                    KeyCode::Char('g') if ctrl => {
+                        self.open_palette(true);
+                        return;
+                    }
+                    KeyCode::F(9) if key.modifiers.is_empty() => {
+                        self.toggle_sidebar(true);
+                        return;
+                    }
+                    _ => {}
+                }
+                if self.sidebar.focused {
+                    self.refresh_outline();
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Tab => {
+                            self.sidebar.focused = false;
+                            return;
+                        }
+                        KeyCode::Up => {
+                            self.sidebar.move_selection(-1, self.tabs.len());
+                            return;
+                        }
+                        KeyCode::Down => {
+                            self.sidebar.move_selection(1, self.tabs.len());
+                            return;
+                        }
+                        KeyCode::Home => {
+                            self.sidebar.selected = 0;
+                            return;
+                        }
+                        KeyCode::End => {
+                            self.sidebar.selected =
+                                self.tabs.len() + self.sidebar.headings.len() - 1;
+                            return;
+                        }
+                        KeyCode::Enter => {
+                            self.activate_sidebar(self.sidebar.target(self.tabs.len()));
+                            return;
+                        }
+                        _ if !ctrl && !matches!(key.code, KeyCode::F(_)) => return,
+                        _ => self.sidebar.focused = false,
+                    }
+                }
                 match key.code {
                     KeyCode::Char('n') if ctrl => {
                         self.new_tab();
@@ -336,6 +558,44 @@ impl Workspace {
                     _ => {}
                 }
             }
+            if self.sidebar.focused && matches!(event, Event::Paste(_)) {
+                return;
+            }
+            if let Event::Mouse(mouse) = &event {
+                self.refresh_outline();
+                if self.sidebar.area.contains((mouse.column, mouse.row).into()) {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let target = self.sidebar.hits.iter().find_map(|(rect, target)| {
+                                rect.contains((mouse.column, mouse.row).into())
+                                    .then_some(*target)
+                            });
+                            if let Some(target) = target {
+                                self.activate_sidebar(target);
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if self.sidebar.focused {
+                                self.sidebar.move_selection(3, self.tabs.len());
+                            } else {
+                                self.sidebar.scroll_rows(3);
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            if self.sidebar.focused {
+                                self.sidebar.move_selection(-3, self.tabs.len());
+                            } else {
+                                self.sidebar.scroll_rows(-3);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    self.sidebar.focused = false;
+                }
+            }
             if let Event::Mouse(mouse) = &event
                 && mouse.row == 0
             {
@@ -358,6 +618,7 @@ impl Workspace {
 
     fn forward(&mut self, event: Event) {
         self.tab_hits.clear();
+        self.sidebar.invalidate();
         let save_target = if matches!(&event, Event::Key(key) if key.code == KeyCode::Enter) {
             self.editor()
                 .pending_save_path()
@@ -415,10 +676,84 @@ impl Workspace {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
-        let show_cursor = self.browser.is_none() && self.pending.as_ref().is_none_or(|p| p.saving);
-        self.editor_mut().draw_with_cursor(frame, show_cursor);
-        self.tab_hits.clear();
         let area = frame.area();
+        self.area = area;
+        self.layout_valid = true;
+        self.refresh_outline();
+        let sidebar_visible = self.sidebar.visible(area);
+        if !sidebar_visible {
+            self.sidebar.focused = false;
+        }
+        let show_cursor = self.browser.is_none()
+            && self.palette.is_none()
+            && !self.sidebar.focused
+            && self.pending.as_ref().is_none_or(|p| p.saving);
+        let sidebar_width = if sidebar_visible {
+            if area.width >= 90 { 27 } else { 23 }
+        } else {
+            0
+        };
+        let editor_area = Rect::new(
+            area.x + sidebar_width,
+            area.y,
+            area.width.saturating_sub(sidebar_width),
+            area.height,
+        );
+        self.editor_mut().draw_in(frame, editor_area, show_cursor);
+        self.tab_hits.clear();
+        self.sidebar.invalidate();
+        if sidebar_visible {
+            let labels: Vec<_> = (0..self.tabs.len())
+                .map(|index| self.label(index))
+                .collect();
+            let top = if area.height >= 10 { 2 } else { 1 };
+            let sidebar_area = Rect::new(
+                area.x,
+                area.y + top,
+                sidebar_width,
+                area.height.saturating_sub(top + 1),
+            );
+            let caret = self.editor().document.selection().head;
+            self.sidebar
+                .draw(frame, sidebar_area, &labels, self.active, caret);
+            frame.render_widget(
+                Paragraph::new(clipped(" F2 Commands", sidebar_width as usize))
+                    .style(chrome_muted()),
+                Rect::new(area.x, area.bottom() - 1, sidebar_width, 1),
+            );
+        }
+        if area.height >= 10 && area.width > 0 {
+            let title = format!(
+                " Marklane  ·  {}",
+                self.editor().path().map_or_else(
+                    || self.label(self.active).trim().to_owned(),
+                    |path| safe_text(&path.display().to_string())
+                )
+            );
+            let hint = "F2 Commands · F9 Sidebar ";
+            let hint_width = UnicodeWidthStr::width(hint) as u16;
+            let title_width = if area.width >= 60 {
+                area.width.saturating_sub(hint_width + 1)
+            } else {
+                area.width
+            };
+            frame.render_widget(
+                Block::default().style(chrome_style()),
+                Rect::new(area.x, area.y + 1, area.width, 1),
+            );
+            frame.render_widget(
+                Paragraph::new(clipped(&title, title_width as usize)).style(chrome_muted()),
+                Rect::new(area.x, area.y + 1, title_width, 1),
+            );
+            if area.width >= 60 {
+                frame.buffer_mut().set_string(
+                    area.right() - hint_width,
+                    area.y + 1,
+                    hint,
+                    chrome_muted(),
+                );
+            }
+        }
         if area.height > 0 && area.width > 0 {
             let strip = Rect::new(area.x, area.y, area.width, 1);
             frame.render_widget(Clear, strip);
@@ -466,6 +801,11 @@ impl Workspace {
                 }
             }
         }
+        if self.editor().has_modal() {
+            self.editor().draw_overlay(frame);
+            self.tab_hits.clear();
+            self.sidebar.hits.clear();
+        }
         if let Some(pending) = &self.pending
             && !pending.saving
         {
@@ -488,6 +828,9 @@ impl Workspace {
         if let Some(browser) = &mut self.browser {
             browser.draw(frame);
         }
+        if let Some(palette) = &mut self.palette {
+            palette.draw(frame);
+        }
     }
 }
 
@@ -495,7 +838,12 @@ pub(crate) fn popup(frame: &mut Frame, title: &str, body: &str) {
     let area = frame.area();
     let width = area.width.saturating_sub(2).min(76);
     let height = area.height.saturating_sub(2).min(12);
-    if width < 4 || height < 3 {
+    if area.width < 12 || area.height < 5 {
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new("Resize to confirm · Esc cancels").style(chrome_style()),
+            area,
+        );
         return;
     }
     let rect = Rect::new(
@@ -508,6 +856,7 @@ pub(crate) fn popup(frame: &mut Frame, title: &str, body: &str) {
     frame.render_widget(
         Paragraph::new(body)
             .wrap(Wrap { trim: false })
+            .style(chrome_style())
             .block(Block::default().borders(Borders::ALL).title(title)),
         rect,
     );
@@ -792,7 +1141,10 @@ mod tests {
         );
         for x in 0..80 {
             assert_ne!(terminal.backend().buffer()[(x, 0)].bg, Color::Reset);
-            assert_eq!(terminal.backend().buffer()[(x, 1)].bg, Color::Reset);
+            assert_eq!(
+                terminal.backend().buffer()[(x, 1)].bg,
+                crate::theme::palette().chrome
+            );
         }
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
         assert!(snapshot.lines().next().unwrap().contains("* Untitled 1.md"));
@@ -1057,5 +1409,380 @@ mod tests {
         let snapshot = crate::simulation::snapshot(&mut app, 100, 24).unwrap();
         assert!(snapshot.contains("open in another tab"));
         assert_eq!(fs::read_to_string(original).unwrap(), "original");
+    }
+    fn palette_query(app: &mut Workspace, query: &str, width: u16, height: u16) {
+        key(app, KeyCode::F(2), KeyModifiers::NONE);
+        app.handle_event(Event::Paste(query.into()));
+        draw(app, width, height);
+    }
+
+    fn click_rect(app: &mut Workspace, rect: Rect) {
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn sidebar_defaults_are_responsive_without_stealing_editor_input() {
+        let mut app = Workspace::open(None).unwrap();
+        app.editor_mut().document = marklane::Document::new("# First\n\n## Second\n");
+        for (width, height) in [(42, 16), (80, 24), (120, 36), (160, 45), (60, 7), (1, 1)] {
+            draw(&mut app, width, height);
+            assert_eq!(app.sidebar.area.width > 0, width >= 110 && height >= 8);
+            assert!(!app.sidebar.focused);
+            assert!(
+                app.sidebar
+                    .hits
+                    .iter()
+                    .all(|(rect, _)| rect.right() <= width && rect.bottom() <= height)
+            );
+        }
+        draw(&mut app, 120, 36);
+        plain(&mut app, 'x');
+        assert!(app.editor().document.text().starts_with("x#"));
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        let before = app.editor().document.text().to_string();
+        plain(&mut app, 'y');
+        app.handle_event(Event::Paste("must stay out".into()));
+        assert_eq!(app.editor().document.text(), before);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        plain(&mut app, 'z');
+        assert!(app.editor().document.text().starts_with("xz#"));
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        app.handle_event(Event::Resize(42, 16));
+        assert!(!app.sidebar.focused);
+        plain(&mut app, 'a');
+        assert!(app.editor().document.text().starts_with("xza#"));
+    }
+
+    #[test]
+    fn sidebar_keyboard_and_mouse_jump_to_unicode_headings_without_edits() {
+        let mut app = Workspace::open(None).unwrap();
+        let source = format!(
+            "# Café\n\n{}\n最後 **section**\n--------------\n",
+            "a paragraph\n\n".repeat(80)
+        );
+        let target = source.find("最後").unwrap();
+        app.editor_mut().document = marklane::Document::new(source.clone());
+        draw(&mut app, 120, 36);
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        draw(&mut app, 120, 36);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        draw(&mut app, 120, 36);
+        assert_eq!(app.editor().document.selection().head, target);
+        assert!(app.editor().scroll > 0);
+        assert!(!app.sidebar.focused);
+        assert_eq!(app.editor().document.text(), source);
+        assert!(!app.editor().document.is_dirty());
+        assert!(!app.editor().document.can_undo());
+        let first = app
+            .sidebar
+            .hits
+            .iter()
+            .find(|(_, target)| *target == Target::Heading(0))
+            .unwrap()
+            .0;
+        click_rect(&mut app, first);
+        draw(&mut app, 120, 36);
+        assert_eq!(app.editor().document.selection().head, 0);
+        assert_eq!(app.editor().scroll, 0);
+    }
+
+    #[test]
+    fn sidebar_rebuilds_outline_on_edits_tabs_and_plain_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.txt");
+        std::fs::write(&path, "# not markdown").unwrap();
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("# one\n\n```\n# hidden\n```\n".into()));
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.headings.len(), 1);
+        app.handle_event(Event::Paste("\n## two\n".into()));
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.headings.len(), 2);
+        app.open_path(path).unwrap();
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.headings.is_empty());
+        let first = app
+            .sidebar
+            .hits
+            .iter()
+            .find(|(_, target)| *target == Target::Tab(0))
+            .unwrap()
+            .0;
+        click_rect(&mut app, first);
+        draw(&mut app, 120, 36);
+        assert_eq!(app.active, 0);
+        assert_eq!(app.sidebar.headings.len(), 2);
+    }
+
+    #[test]
+    fn sidebar_explicit_toggle_and_resize_discard_stale_hits() {
+        let mut app = Workspace::open(None).unwrap();
+        app.editor_mut().document = marklane::Document::new("# One\n\n## Two\n");
+        draw(&mut app, 80, 24);
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        draw(&mut app, 80, 24);
+        assert!(app.sidebar.focused);
+        assert!(app.sidebar.area.width > 0);
+        let heading = app
+            .sidebar
+            .hits
+            .iter()
+            .find(|(_, target)| *target == Target::Heading(1))
+            .unwrap()
+            .0;
+        app.handle_event(Event::Resize(42, 16));
+        click_rect(&mut app, heading);
+        assert_eq!(app.editor().document.selection().head, 0);
+        draw(&mut app, 42, 16);
+        assert!(app.sidebar.hits.is_empty());
+        draw(&mut app, 80, 24);
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.area.width, 0);
+    }
+
+    #[test]
+    fn palette_filters_and_escape_preserve_document_selection_and_history() {
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("Café source\n".into()));
+        app.editor_mut().document.select_all();
+        let selection = app.editor().document.selection();
+        let revision = app.editor().document.revision();
+        palette_query(&mut app, "SAVE", 80, 24);
+        assert_eq!(
+            app.palette.as_ref().unwrap().matches(),
+            vec![Command::Save, Command::SaveAs]
+        );
+        ctrl(&mut app, 'a');
+        app.handle_event(Event::Paste("不存在\n\r\0".into()));
+        draw(&mut app, 42, 16);
+        assert_eq!(app.palette.as_ref().unwrap().query.text(), "不存在");
+        assert!(app.palette.as_ref().unwrap().matches().is_empty());
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.palette.is_some());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.editor().document.selection(), selection);
+        assert_eq!(app.editor().document.revision(), revision);
+        assert_eq!(app.editor().document.text(), "Café source\n");
+        ctrl(&mut app, 'z');
+        assert_eq!(app.editor().document.text(), "");
+    }
+
+    #[test]
+    fn palette_mouse_actions_and_keyboard_actions_reuse_workspace_semantics() {
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("first".into()));
+        palette_query(&mut app, "new", 80, 24);
+        let hit = app.palette.as_ref().unwrap().hits[0].0;
+        click_rect(&mut app, hit);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 1);
+        app.handle_event(Event::Paste("second".into()));
+        palette_query(&mut app, "previous", 80, 24);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.editor().document.text(), "first");
+        palette_query(&mut app, "close", 80, 24);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.pending.is_some());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.tabs.len(), 2);
+        palette_query(&mut app, "quit", 80, 24);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        plain(&mut app, 'n');
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.should_exit);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs[0].editor.document.text(), "first");
+    }
+
+    #[test]
+    fn palette_save_as_keeps_duplicate_tab_protection() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("owned.md");
+        std::fs::write(&existing, "first").unwrap();
+        let mut app = Workspace::open(Some(existing.clone())).unwrap();
+        ctrl(&mut app, 'n');
+        app.handle_event(Event::Paste("second".into()));
+        palette_query(&mut app, "save as", 80, 24);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.editor().saving_as());
+        app.handle_event(Event::Paste(existing.display().to_string()));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.editor().saving_as());
+        assert_eq!(std::fs::read_to_string(existing).unwrap(), "first");
+        assert_eq!(app.editor().document.text(), "second");
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    #[test]
+    fn palette_short_resize_and_hidden_targets_never_run_actions() {
+        let mut app = Workspace::open(None).unwrap();
+        for (width, height) in [
+            (42, 16),
+            (80, 24),
+            (120, 36),
+            (160, 45),
+            (12, 5),
+            (8, 4),
+            (1, 1),
+        ] {
+            palette_query(&mut app, "new", width, height);
+            let palette = app.palette.as_ref().unwrap();
+            assert!(
+                palette
+                    .hits
+                    .iter()
+                    .all(|(rect, _)| rect.right() <= width && rect.bottom() <= height)
+            );
+            if height < 5 || width < 12 {
+                assert!(palette.hits.is_empty());
+                key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+                assert_eq!(app.tabs.len(), 1);
+            }
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        }
+        palette_query(&mut app, "new", 80, 24);
+        let hit = app.palette.as_ref().unwrap().hits[0].0;
+        app.handle_event(Event::Resize(42, 16));
+        click_rect(&mut app, hit);
+        assert_eq!(app.tabs.len(), 1);
+        draw(&mut app, 42, 16);
+        let hit = app.palette.as_ref().unwrap().hits[0].0;
+        ctrl(&mut app, 'a');
+        app.handle_event(Event::Paste("no such command".into()));
+        click_rect(&mut app, hit);
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn go_to_line_handles_all_newlines_clamps_eof_and_preserves_source() {
+        let mut app = Workspace::open(None).unwrap();
+        let source = "one\r\n界 two\rthree\nfour";
+        app.editor_mut().document = marklane::Document::new(source);
+        for (line, offset) in [(1, 0), (2, 5), (3, 13), (4, 19), (999, source.len())] {
+            ctrl(&mut app, 'g');
+            app.handle_event(Event::Paste(line.to_string()));
+            draw(&mut app, 80, 24);
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(app.editor().document.selection().head, offset);
+            assert_eq!(app.editor().document.text(), source);
+            assert!(!app.editor().document.can_undo());
+        }
+        ctrl(&mut app, 'g');
+        app.handle_event(Event::Paste("0".into()));
+        draw(&mut app, 80, 24);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.palette.as_ref().unwrap().line_mode);
+    }
+
+    #[test]
+    fn palette_theme_changes_both_chrome_and_body_without_editing_source() {
+        let mut app = Workspace::open(None).unwrap();
+        app.editor_mut().document = marklane::Document::new("# Theme\n");
+        let old_theme = crate::theme::current_theme();
+        let before = draw(&mut app, 120, 36).backend().buffer()[(0, 0)].bg;
+        palette_query(&mut app, "theme", 120, 36);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let rendered = draw(&mut app, 120, 36);
+        assert_ne!(rendered.backend().buffer()[(0, 0)].bg, before);
+        assert_eq!(
+            rendered.backend().buffer()[(0, 2)].bg,
+            crate::theme::palette().chrome
+        );
+        assert_eq!(app.editor().document.text(), "# Theme\n");
+        assert!(!app.editor().document.can_undo());
+        crate::theme::set_theme(old_theme);
+    }
+    #[test]
+    fn palette_selected_query_is_visible_and_empty_paste_keeps_it() {
+        let mut app = Workspace::open(None).unwrap();
+        palette_query(&mut app, "é界", 80, 24);
+        ctrl(&mut app, 'a');
+        let selected = app.palette.as_ref().unwrap().query.selection();
+        let revision = app.palette.as_ref().unwrap().query.revision();
+        for paste in ["", "\r\n\0\t\u{1b}"] {
+            app.handle_event(Event::Paste(paste.into()));
+            assert_eq!(app.palette.as_ref().unwrap().query.text(), "é界");
+            assert_eq!(app.palette.as_ref().unwrap().query.selection(), selected);
+            assert_eq!(app.palette.as_ref().unwrap().query.revision(), revision);
+        }
+        let rendered = draw(&mut app, 80, 24);
+        let cell = rendered
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "é")
+            .unwrap();
+        assert_eq!(cell.bg, chrome_active().bg.unwrap());
+        assert!(cell.modifier.contains(Modifier::BOLD));
+        app.handle_event(Event::Paste("save".into()));
+        assert_eq!(app.palette.as_ref().unwrap().query.text(), "save");
+        assert!(app.editor().document.text().is_empty());
+    }
+
+    #[test]
+    fn modal_draws_over_sidebar_and_blocks_hidden_targets() {
+        let mut app = Workspace::open(None).unwrap();
+        app.editor_mut().document = marklane::Document::new("# One\n\n## Two\n");
+        draw(&mut app, 120, 36);
+        let target = app
+            .sidebar
+            .hits
+            .iter()
+            .find(|(_, target)| *target == Target::Heading(1))
+            .unwrap()
+            .0;
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        let text = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
+        assert!(text.contains("Marklane · Help"));
+        assert!(app.sidebar.hits.is_empty());
+        assert!(app.tab_hits.is_empty());
+        click_rect(&mut app, target);
+        assert_eq!(app.editor().document.selection().head, 0);
+        assert!(app.editor().has_modal());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        let text = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
+        assert!(text.contains("Save As · new filename"));
+        assert!(app.sidebar.hits.is_empty());
+    }
+
+    #[test]
+    fn tiny_confirmation_requires_visible_prompt_and_cancel_stays_available() {
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("valuable".into()));
+        draw(&mut app, 8, 3);
+        ctrl(&mut app, 'q');
+        plain(&mut app, 'n');
+        assert!(!app.should_exit);
+        assert_eq!(app.editor().document.text(), "valuable");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.pending.is_none());
+    }
+
+    #[test]
+    fn scrolling_sidebar_does_not_capture_keyboard_focus() {
+        let mut app = Workspace::open(None).unwrap();
+        app.editor_mut().document = marklane::Document::new("# Heading\n\n".repeat(30));
+        draw(&mut app, 120, 16);
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        draw(&mut app, 120, 16);
+        assert!(!app.sidebar.focused);
+        plain(&mut app, 'x');
+        assert!(app.editor().document.text().starts_with("x#"));
     }
 }
