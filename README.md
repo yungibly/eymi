@@ -2,9 +2,22 @@
 
 A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
 
-**Status: under active development.** The product and command name is **Eymi** / `eymi`; the repository directory remains `md-term-editor`. Build locally to try the UI polish checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
-
 The central idea: make a Markdown document pleasant to work in directly, with dependable cursor movement and selection, while preserving the underlying file exactly outside intentional edits.
+
+## Install
+
+```sh
+brew install yungibly/tap/eymi
+eymi note.md
+```
+
+[Release archives](https://github.com/yungibly/eymi/releases) include prebuilt binaries for macOS on Apple Silicon and Intel, and Linux x86_64 with glibc 2.35 or newer. Extract an archive and put `eymi` on your PATH. All themes are included; a Nerd Font is optional. Linux ARM and Windows release binaries are not provided.
+
+Press **F1** for help or **F2** for searchable commands. Use **Ctrl+S** to save and **Ctrl+Q** to quit. With no filename, `eymi` starts an untitled Markdown document.
+
+## Development
+
+Building from source requires **Rust 1.89 or newer**. The [release guide](docs/releases.md) describes CI, package verification, and the Homebrew update process. Eymi's code is [MIT licensed](LICENSE); bundled themes and Rust dependencies retain their own notices in release archives.
 
 - [Product and interaction plan](docs/product-plan.md): live editing, rendering, controls, tabs, themes, and ideas for working alongside agents.
 - [Technical plan and milestones](docs/technical-plan.md): proposed Rust stack, source mapping, file safety, compatibility, and the first prototype.
@@ -12,9 +25,7 @@ The central idea: make a Markdown document pleasant to work in directly, with de
 - [Prototype checks](docs/prototype-checks.md): headless verification and a short manual terminal checklist.
 - [Visual testing and UI polish](docs/visual-testing-plan.md): screenshot feedback, the Ghostty keyboard fix, and the reusable test loop with its known limits.
 
-## Try it
-
-With a recent Rust toolchain, build and print a headless screen without opening an interactive terminal:
+Build and print a headless screen without opening an interactive terminal:
 
 ```sh
 cargo build --locked

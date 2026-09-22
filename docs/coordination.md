@@ -1,6 +1,36 @@
-# Marklane implementation coordination
+# Eymi implementation coordination
 
-Working product name: **Marklane**. Command and Cargo package/binary name: **`marklane`**.
+Confirmed product name: **Eymi**. Command and Cargo package/binary name: **`eymi`**. The older checkpoints below retain their historical names and decisions.
+
+## Final features and distribution — September 22, 2026
+
+The user confirmed Eymi and the MIT license after a final usability pass.
+Three agents again used isolated worktrees, with the coordinator integrating
+reviewed commits into the main checkout.
+
+| Owner | Integrated scope |
+| --- | --- |
+| Editor surface | Clickable new-document button; native CI and release packaging |
+| Editing core | Source-preserving line movement/duplication; Eymi rename and legacy settings/recovery compatibility |
+| Workspace review | Neovim workflow research, navigation review, tap and package attribution audit |
+| Coordinator | Fuzzy open-document/heading pickers, MIT metadata, Homebrew integration, final verification and release |
+
+F10 switches documents and F11 searches parsed headings. Alt+Up/Down moves
+source lines; adding Shift duplicates them. These actions are also in F2.
+The tab row's plus button creates a document through the normal new-tab path.
+The [research note](lazyvim-research.md) records the upstream workflow references.
+
+The rename preserves the recovery format and selects existing legacy config
+and state roots independently when no new-name directory exists. Tests use
+temporary roots and include an actual process crash/restart through legacy
+storage. No migration or deletion is performed during directory selection.
+
+Distribution uses three native builds: macOS arm64, macOS x86_64, and Linux
+x86_64. Packages include the root license, complete theme provenance, and
+target-specific Rust dependency notices. A draft release is reviewed before
+publication; anonymous downloads and native Homebrew install tests precede
+the tap update. See the [release guide](releases.md) and
+[verification record](prototype-checks.md#verification-record).
 
 ## UI polish checkpoint — September 22, 2026
 

@@ -34,7 +34,9 @@ python3 tests/ui/visual/run.py \
   --keyboard enhanced --theme dark --palette dark
 ```
 
-The current build defaults to `--keyboard enhanced`; use `--keyboard baseline` only for a pre-fix binary. Explicit tool/binary paths also allow comparing separate worktrees. `--suite captures`, `--suite protocol`, `--suite unicode`, `--suite workspace`, `--suite themes`, `--suite reliability`, and `--suite chrome` isolate checks; the default runs all seven. `--theme light --palette light` selects both the editor's light theme and the emulator's light defaults. Omit `--theme` when comparing a binary predating editor themes. Each output directory must be new, keeping runs and source revisions independent.
+The current build defaults to `--keyboard enhanced`; use `--keyboard baseline` only for a pre-fix binary. Explicit tool/binary paths also allow comparing separate worktrees. `--suite captures`, `--suite protocol`, `--suite unicode`, `--suite workspace`, `--suite themes`, `--suite reliability`, `--suite chrome`, and `--suite workflows` isolate checks; the default runs all eight. `--theme light --palette light` selects both the editor's light theme and the emulator's light defaults. Omit `--theme` when comparing a binary predating editor themes. Each output directory must be new, keeping runs and source revisions independent.
+
+The workflows suite exercises the clickable new-document button, fuzzy document and heading pickers, and source line movement/duplication. It checks modal and tiny-window safety, exact saved source, undo, and selection restoration with screenshots at compact and wide sizes.
 
 The chrome suite checks a single header and filename, an outline without duplicate document tabs, no idle command hints, active/dirty tab overflow, theme segments, source/selection/undo preservation, and 20/42/80/120/160-column layouts. `--icons plain` verifies the default contains no private-use glyphs. For optional symbols, run `--suite chrome --icons nerd --font 'JetBrainsMono Nerd Font Mono'` with that font installed. `--font` controls the renderer preference and is recorded in metadata; the default remains `JetBrains Mono`.
 

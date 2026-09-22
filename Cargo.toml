@@ -2,7 +2,11 @@
 name = "eymi"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 description = "A source-preserving terminal Markdown editor"
+license = "MIT"
+repository = "https://github.com/yungibly/eymi"
+homepage = "https://github.com/yungibly/eymi"
 
 [dependencies]
 arboard = { version = "3.6", default-features = false }
