@@ -2,6 +2,38 @@
 
 Working product name: **Marklane**. Command and Cargo package/binary name: **`marklane`**.
 
+## Everyday usability checkpoint — September 22, 2026
+
+This checkpoint supersedes the historical assignments below. The user requested
+a substantial step toward everyday use, with the supplied calm writing-surface
+mockup as design inspiration. CI and Homebrew publishing remain deferred.
+
+All three implementers use separate managed worktrees. Only the coordinator
+integrates reviewed commits into the main checkout; agents do not modify it.
+
+| Owner | Task | Files and deliverable |
+| --- | --- | --- |
+| Coordinator | `01a0c8cd-e941-7b02-8a7b-64c2be21ea6a` | CLI, documentation, terminal runner, keyboard integration, review and final verification |
+| Editing core | `01a0c8ce-3502-7702-aa01-eab19e7899d3` | `document.rs`, `editing.rs`, `lib.rs`: word navigation/deletion, indentation, inline formatting, bounded/coalesced undo |
+| Editor surface | `01a0c8d1-84f0-7f83-bd06-3272b73e0804` | `app.rs`, `projection.rs`, `search_highlight.rs`, `theme.rs`: paired light/dark palettes, readable width, wrapping, offset viewport geometry |
+| Workspace | `01a0c8d1-97e2-7d52-9bdc-de9c1a414e07` | `workspace.rs`, `browser.rs`, workspace child modules: responsive documents/outline sidebar and filterable command palette |
+
+Shared interfaces: `App::draw_in(frame, area, show_cursor)` accepts a horizontal
+slice with absolute coordinates and full frame height, retaining existing top
+row reservations. `App::jump_to_source(offset)` resets transient interaction and
+follows the requested caret. Existing chrome-style functions use the current
+theme. `theme::set_theme(Theme::{Dark,Light})` selects the palette before opening
+the workspace. `Document::insert` remains a literal transaction, with a separate
+`type_text` and `break_undo_group` API for explicit typing grouping.
+
+Acceptance includes source fidelity, undo/redo and selection geometry, existing
+file-conflict and quit protections, tiny/compact/wide layouts, and actual
+executable captures with the pinned `tui-test` at 80×24, 120×36, and 160×45.
+New commands must be discoverable from help or the command palette. The
+coordinator runs the combined suite, build, strict Clippy, formatting and visual
+inspection after integrating all workstreams. Known emulator Unicode limits
+remain separate from application correctness.
+
 This note records the two-agent implementation assignments, starting with the first working editing surface and followed by the find/clipboard checkpoint below. The [product plan](product-plan.md) and [technical plan](technical-plan.md) describe the broader direction.
 
 ## Confirmed product decisions

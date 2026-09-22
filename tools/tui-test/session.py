@@ -42,7 +42,7 @@ def decode_log_bytes(value):
 
 
 class Session:
-    def __init__(self, tool, binary, output, fixture, palette="dark", size=(80, 24)):
+    def __init__(self, tool, binary, output, fixture, palette="dark", size=(80, 24), app_args=()):
         self.tool, self.binary = Path(tool).resolve(), Path(binary).resolve()
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=False)
@@ -56,6 +56,7 @@ class Session:
         self.original_bytes = self.fixture.read_bytes()
         self.original_source = self.original_bytes.decode("utf-8")
         self.size = size
+        self.app_args = list(app_args)
         self.env = dict(os.environ)
         # The execution shell commonly sets NO_COLOR=1 and TERM=dumb.
         self.env.pop("NO_COLOR", None)
@@ -75,6 +76,7 @@ class Session:
         self.metadata = {
             "tool": str(self.tool), "tool_version": version, "tool_sha256": sha256(self.tool),
             "binary": str(self.binary), "binary_sha256": sha256(self.binary),
+            "app_arguments": self.app_args,
             "fixture_sha256": sha256(fixture), "backend": "ghostty", "initial_size": size,
             "palette": {"name": palette, "background": background, "foreground": foreground},
             "environment": {"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": None},
@@ -110,7 +112,8 @@ class Session:
     def start(self):
         self.started = True
         return self.call("--verbose", "run", "--backend", "ghostty", "--cols", self.size[0],
-                         "--rows", self.size[1], "--cwd", self.output, self.binary, self.fixture)
+                         "--rows", self.size[1], "--cwd", self.output,
+                         self.binary, *self.app_args, self.fixture)
 
     def settle(self):
         self.call("wait", "idle", "--timeout", "3000")

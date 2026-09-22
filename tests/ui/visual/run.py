@@ -104,7 +104,7 @@ def captures(session):
     session.capture("05-replace-with-focused-80x24")
     session.call("resize", 42, 16)
     session.capture("06-replace-42x16")
-    for cols, rows in [(120, 36), (160, 48)]:
+    for cols, rows in [(120, 36), (160, 45)]:
         session.call("resize", cols, rows)
         session.capture(f"07-replace-{cols}x{rows}")
         session.key("Escape")
@@ -212,6 +212,8 @@ def main():
     parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="baseline")
     parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
+    parser.add_argument("--theme", choices=["dark", "light"],
+                        help="Editor theme; omitted for compatibility with older binaries")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(__file__, args.output / "scenario.py")
@@ -222,7 +224,9 @@ def main():
     suites = ["captures", "protocol", "unicode"] if args.suite == "all" else [args.suite]
     for suite in suites:
         fixture = "acceptance.md" if suite == "unicode" else "screenshots.md"
-        session = Session(args.tool, args.binary, args.output / suite, Path(__file__).with_name(fixture), args.palette)
+        app_args = ["--theme", args.theme] if args.theme else []
+        session = Session(args.tool, args.binary, args.output / suite,
+                          Path(__file__).with_name(fixture), args.palette, app_args=app_args)
         try:
             session.start()
             session.call("expect", "text", "Terminal acceptance", "--timeout", 3000)

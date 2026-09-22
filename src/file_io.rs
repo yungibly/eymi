@@ -11,6 +11,7 @@ pub struct FileState {
 }
 
 impl FileState {
+    #[cfg(test)]
     pub fn open(path: PathBuf) -> io::Result<(String, Self)> {
         let baseline = read_optional(&path)?;
         Self::from_baseline(path, baseline)
@@ -83,7 +84,17 @@ impl FileState {
     }
 
     fn check_baseline(&self) -> io::Result<()> {
-        if read_optional(&self.path)? != self.baseline {
+        // A file may have grown arbitrarily since opening it. Compare a bounded
+        // stream with the accepted baseline instead of allocating the new file.
+        let unchanged = match open_regular_file(&self.path) {
+            Ok(file) => match &self.baseline {
+                Some(baseline) => matches_baseline(file, baseline)?,
+                None => false,
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => self.baseline.is_none(),
+            Err(error) => return Err(error),
+        };
+        if !unchanged {
             return Err(io::Error::other(
                 "File changed or was removed on disk. Your edits are intact; use Ctrl+Shift+S or F4 to Save As",
             ));
@@ -92,6 +103,25 @@ impl FileState {
     }
 }
 
+fn matches_baseline(mut reader: impl Read, baseline: &[u8]) -> io::Result<bool> {
+    let mut buffer = [0; 8192];
+    for expected in baseline.chunks(buffer.len()) {
+        let actual = &mut buffer[..expected.len()];
+        match reader.read_exact(actual) {
+            Ok(()) if actual == expected => {}
+            Ok(()) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    match reader.read_exact(&mut [0]) {
+        Ok(()) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
 fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
     read_optional_with_limit(path, None)
 }
@@ -195,6 +225,40 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn baseline_comparison_is_exact_and_reads_at_most_one_extra_byte() {
+        use std::{cell::Cell, io::Cursor};
+        struct Counted<'a> {
+            read: &'a Cell<usize>,
+            reader: Cursor<Vec<u8>>,
+        }
+        impl Read for Counted<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let count = self.reader.read(buffer)?;
+                self.read.set(self.read.get() + count);
+                Ok(count)
+            }
+        }
+        let baseline = vec![b'x'; 9000];
+        let read = Cell::new(0);
+        assert!(
+            !matches_baseline(
+                Counted {
+                    read: &read,
+                    reader: Cursor::new(vec![b'x'; 100_000])
+                },
+                &baseline,
+            )
+            .unwrap()
+        );
+        assert_eq!(read.get(), baseline.len() + 1);
+        assert!(matches_baseline(Cursor::new(&baseline), &baseline).unwrap());
+        assert!(!matches_baseline(Cursor::new(&baseline[..8999]), &baseline).unwrap());
+        assert!(!matches_baseline(Cursor::new(b"different"), b"original!").unwrap());
+        assert!(matches_baseline(io::empty(), b"").unwrap());
+        assert!(!matches_baseline(Cursor::new(b"x"), b"").unwrap());
+    }
 
     #[test]
     fn bytes_and_noop_saves_are_exact() {
