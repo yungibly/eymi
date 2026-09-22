@@ -2,7 +2,7 @@
 
 The headless harness exercises the application's real input and rendering paths. Real-terminal behavior is a separate manual check because agents cannot operate terminal apps through Computer Use in this environment.
 
-Status: compact UI, shaded control bars, and enhanced keyboard input passed combined verification on September 20, 2026: 148 tests, build, strict Clippy, and formatting. The user previously reported that tabs/browser worked in Ghostty directly, with UI clutter and a nonworking Shift+Enter shortcut. These changes address those reports; a native Ghostty check of this new build remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
+Status: the September 22 everyday-usability checkpoint adds paired themes, a centered writing column, word wrapping, a documents/outline sidebar, command palette, source-line jumps, formatting, word editing, indentation, and bounded grouped undo. The verification record below separates automated evidence from native terminal checks. Earlier user reports cover prior builds; a native Ghostty pass of this checkpoint remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
 
 ## Automated checks
 
@@ -15,9 +15,36 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo run --locked -- --snapshot tests/ui/demo.md
 cargo run --locked -- --snapshot --source tests/ui/demo.md
+cargo run --locked -- --snapshot --snapshot-size 160x45 --theme light tests/ui/visual/writing.md
 ```
 
-`--snapshot` draws the actual application into an 80×24 in-memory terminal and prints its cell text plus caret coordinates. It does not start an interactive terminal. Tests replay synthetic keyboard, mouse, paste, and resize events through the app's input handler.
+`--snapshot` draws the actual application into an in-memory terminal and prints its cell text plus caret coordinates. It defaults to 80×24; `--snapshot-size WIDTHxHEIGHT` accepts dimensions up to 400×160. It does not start an interactive terminal. Tests replay synthetic keyboard, mouse, paste, and resize events through the app's input handler.
+
+## Everyday usability check
+
+Build, copy `tests/ui/visual/writing.md` to a scratch location, and open that copy
+with `--theme light`. The same sequence works with `--theme dark`.
+
+1. At a wide size, check the centered prose, heading gutter, code background,
+   and documents/outline sidebar. Click a heading, then use F9 and arrows/Enter
+   to navigate by keyboard. Ctrl+G jumps to a source line. Narrow the window to
+   80×24 and 42×16; the sidebar should hide and editing remain usable.
+2. Open F2, filter for `theme`, and run the command. Reopen and filter `bold`.
+   Escape should retain the source selection and return to editing. Filtered
+   commands should remain clickable; resizing must not activate stale targets.
+3. Select a word with Ctrl/Alt+Shift+Right. Try Ctrl+B, Alt+I, and Alt+backtick,
+   undoing each operation. Select two lines, Tab to indent and Shift+Tab to
+   outdent. Plain Tab at a caret remains a literal tab.
+4. Type a word and undo once. Repeat with a navigation, view, or tab command
+   between typing runs: undo should only remove the later run. Multiline paste
+   should still undo once. Ctrl+Y or Ctrl+Shift+Z redoes the change.
+5. F1 shows scrollable help. Check its final entries in a short window using
+   arrows/PageDown. Open a second document, switch tabs, save and close. Dirty
+   confirmations and external-change failures must retain edits on cancellation.
+
+The automated runner covers corresponding actions with scratch files and raw
+keyboard traffic. Native clipboard, terminal key interception, IME, and actual
+font/emoji presentation still require environment-specific observation.
 
 Plain-text snapshot output omits terminal colors and modifiers. Neither snapshots nor passing tests establish how a particular terminal displays fonts, transmits keys, or restores its screen on exit.
 

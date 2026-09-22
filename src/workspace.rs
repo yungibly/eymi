@@ -363,6 +363,14 @@ impl Workspace {
         if matches!(event, Event::Key(key) if key.kind == KeyEventKind::Release) {
             return;
         }
+        // Workspace commands may return without reaching App, including a tab
+        // switch to the already active tab. They still end a typing transaction.
+        let typing = matches!(&event, Event::Key(key)
+            if matches!(key.code, KeyCode::Char(_))
+                && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
+        if !typing {
+            self.editor_mut().document.break_undo_group();
+        }
         if let Event::Resize(width, height) = &event {
             self.area = Rect::new(0, 0, *width, *height);
             self.layout_valid = false;
@@ -964,6 +972,37 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
         terminal
+    }
+
+    #[test]
+    fn no_op_workspace_navigation_and_current_tab_click_end_typing_groups() {
+        for event in [
+            Event::Key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL)),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        ] {
+            let mut app = Workspace::open(None).unwrap();
+            for c in "first".chars() {
+                plain(&mut app, c);
+            }
+            draw(&mut app, 80, 24);
+            app.handle_event(event);
+            for c in "second".chars() {
+                plain(&mut app, c);
+            }
+            assert_eq!(app.editor().document.text(), "firstsecond");
+            ctrl(&mut app, 'z');
+            assert_eq!(app.editor().document.text(), "first");
+            ctrl(&mut app, 'z');
+            assert_eq!(app.editor().document.text(), "");
+        }
     }
 
     #[test]

@@ -31,10 +31,12 @@ python3 tests/ui/visual/run.py \
   --tool "$marklane_tui_test" \
   --binary target/debug/marklane \
   --output target/visual-current \
-  --keyboard enhanced
+  --keyboard enhanced --theme dark --palette dark
 ```
 
-The current build uses `--keyboard enhanced`; use `--keyboard baseline` only for a pre-fix binary. Explicit tool/binary paths also allow comparing separate worktrees. `--suite captures` runs only the visual scenarios; `--suite protocol` and `--suite unicode` isolate the other checks. `--palette light` selects the declared light background/foreground. Each output directory must be new, making comparisons between baseline, keyboard-fix, and UI binaries independent of source integration.
+The current build defaults to `--keyboard enhanced`; use `--keyboard baseline` only for a pre-fix binary. Explicit tool/binary paths also allow comparing separate worktrees. `--suite captures`, `--suite protocol`, `--suite unicode`, and `--suite workspace` isolate checks; the default runs all four. `--theme light --palette light` selects both the editor's light theme and the emulator's light defaults. Omit `--theme` when comparing a binary predating editor themes. Each output directory must be new, keeping runs and source revisions independent.
+
+Layout captures cover 80×24, 42×16, 120×36, and 160×45. The workspace suite starts with `writing.md` at 160×45, checks pointer/keyboard outline navigation, go-to-line, filtered commands, theme switching, formatting and indentation with exact saved source and undo, grouped keyboard typing, literal paste, tabs, and tiny-palette behavior. It also captures 20×10 and 20×4 fallbacks. Native PNGs, cells and traffic all come from the same executable session.
 
 The runner copies fixtures before making any edits. It removes inherited `NO_COLOR`, sets `TERM=xterm-256color` and `COLORTERM=truecolor`, and starts a fresh daemon with an isolated `TUI_TEST_HOME` and explicit config; it does not change `HOME`. All operations run within one owning Python process and close only that session. On the tested macOS execution sandbox, the local PTY/socket needs ordinary execution escalation; sandbox failure appears as “socket never started accepting connections.” No native terminal window is required.
 
@@ -48,6 +50,14 @@ Each suite retains:
 The output root also contains the scenario, helper, fixtures, and original invocation. Replay the saved `scenario.py` with explicit tool/binary paths and a new output directory. Casts replay terminal output; the Python scenario re-executes actions.
 
 The tests inspect actual cells for emphasis, wide-character placement, source selection, and distinct active/passive match backgrounds. Three query matches distinguish previous from next. Protocol checks observe the app's activation before accepting backend-generated modified input. Raw Ghostty 1.3.1 default `ESC[27;2;13~`, enhanced `ESC[13;2u`, and legacy CR are separately labelled parser regressions. Paste honors the observed bracketed-paste mode; wheel events carry a body cell position. Checkbox and multiline-paste operations verify saved scratch source and one-step undo.
+
+For a quick text-only geometry check without the PTY runner:
+
+```sh
+./target/debug/marklane --snapshot --snapshot-size 160x45 --theme light tests/ui/visual/writing.md
+```
+
+Snapshot dimensions accept 1×1 through 400×160 and default to 80×24. Text snapshots omit colors; use the executable captures for appearance.
 
 ## Verified scope and limits
 

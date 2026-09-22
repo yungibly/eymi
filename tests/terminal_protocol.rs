@@ -330,5 +330,10 @@ fn word_selection_formatting_indentation_and_typing_undo_reach_the_core() {
     session.save_and_expect("*alpha* beta\n");
     session.send(b"\x1b[122;5u");
     session.save_and_expect(source);
+    // Even a no-op tab command must end a typing group in the workspace.
+    session.send(b"\x1b[1;5Ffirst\x1b[19~second\x1b[122;5u");
+    session.save_and_expect("alpha beta\nfirst");
+    session.send(b"\x1b[122;5u");
+    session.save_and_expect(source);
     session.finish();
 }
