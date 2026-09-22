@@ -408,6 +408,10 @@ def chrome(session):
             positions = list(find_cells(cells, "Ln "))
             session.check(len(positions) == 1, "Cursor position remains visible in statusline: " + label)
             position = positions[0]
+            footer = "".join(c["char"] for c in sorted(
+                (c for c in cells if c["y"] == position[0]["y"]), key=lambda c: c["x"]))
+            session.check(footer.count("MARKDOWN") == 1 and len(re.findall(r"\b\d+ words\b", footer)) == 1,
+                          "Footer file type and word count each appear only once: " + label, footer=footer)
             session.check(position[0]["y"] > header_y, "Position belongs to the footer: " + label)
             backgrounds = {c["bg"] for c in cells if c["y"] == position[0]["y"]}
             session.check(len(backgrounds) >= 2, "Statusline segments use distinct backgrounds: " + label)
