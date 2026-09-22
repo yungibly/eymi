@@ -80,7 +80,7 @@ pub struct Workspace {
     clipboard: Clipboard,
     pending: Option<Pending>,
     browser: Option<Browser>,
-    tab_hits: Vec<(Rect, usize)>,
+    tab_hits: Vec<(Rect, tabs::Target)>,
     sidebar: Sidebar,
     palette: Option<Palette>,
     choice: Option<Choice>,
@@ -723,12 +723,15 @@ impl Workspace {
                 && mouse.row == 0
             {
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && let Some(index) = self.tab_hits.iter().find_map(|(rect, index)| {
+                    && let Some(target) = self.tab_hits.iter().find_map(|(rect, target)| {
                         rect.contains((mouse.column, mouse.row).into())
-                            .then_some(*index)
+                            .then_some(*target)
                     })
                 {
-                    self.switch(index);
+                    match target {
+                        tabs::Target::Activate(index) => self.switch(index),
+                        tabs::Target::NewDocument => self.new_tab(),
+                    }
                 }
                 return;
             }
@@ -1188,7 +1191,7 @@ mod tests {
         let rect = app
             .tab_hits
             .iter()
-            .find(|(_, index)| *index == 0)
+            .find(|(_, target)| *target == tabs::Target::Activate(0))
             .unwrap()
             .0;
         let mouse = MouseEvent {
@@ -1208,7 +1211,7 @@ mod tests {
         let second = app
             .tab_hits
             .iter()
-            .find(|(_, index)| *index == 1)
+            .find(|(_, target)| *target == tabs::Target::Activate(1))
             .unwrap()
             .0;
         app.handle_event(Event::Resize(3, 6));
@@ -1220,6 +1223,100 @@ mod tests {
         for size in [(1, 1), (3, 6), (12, 8), (80, 24)] {
             draw(&mut app, size.0, size.1);
         }
+    }
+
+    fn new_document_button(app: &Workspace) -> Option<Rect> {
+        app.tab_hits
+            .iter()
+            .find_map(|(rect, target)| (*target == tabs::Target::NewDocument).then_some(*rect))
+    }
+
+    #[test]
+    fn new_document_button_creates_markdown_once_and_keeps_undo_history() {
+        let old_icons = crate::icons::current();
+        for icons in [crate::icons::IconSet::Plain, crate::icons::IconSet::Nerd] {
+            crate::icons::set(icons);
+            let mut app = Workspace::open(None).unwrap();
+            plain(&mut app, 'a');
+            plain(&mut app, 'b');
+            draw(&mut app, 120, 24);
+            key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+            let terminal = draw(&mut app, 120, 24);
+            assert!(app.sidebar.focused);
+            let rect = new_document_button(&app).unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(rect.x + 1, rect.y)].symbol(),
+                "+"
+            );
+            let mouse = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.handle_event(Event::Mouse(mouse));
+            assert_eq!(app.tabs.len(), 2);
+            assert_eq!(app.active, 1);
+            assert!(!app.sidebar.focused);
+            assert_eq!(app.editor().document.text(), "");
+            assert!(!app.editor().document.is_dirty());
+            assert!(app.editor().is_markdown());
+            assert!(app.editor().path().is_none());
+            assert_eq!(app.label(1).trim(), "Untitled 2.md");
+            assert_eq!(app.tabs[0].editor.document.text(), "ab");
+            assert!(app.tab_hits.is_empty());
+            draw(&mut app, 120, 24);
+            let rect = new_document_button(&app).unwrap();
+            // Release over the newly laid-out button must not create another tab.
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: rect.x + 1,
+                row: rect.y,
+                ..mouse
+            }));
+            assert_eq!(app.tabs.len(), 2);
+            key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
+            plain(&mut app, 'c');
+            ctrl(&mut app, 'z');
+            assert_eq!(app.editor().document.text(), "ab");
+            ctrl(&mut app, 'z');
+            assert_eq!(app.editor().document.text(), "");
+        }
+        crate::icons::set(old_icons);
+    }
+
+    #[test]
+    fn new_document_button_respects_modal_and_resize_guards() {
+        for (code, modifiers) in [
+            (KeyCode::F(1), KeyModifiers::NONE),
+            (KeyCode::F(4), KeyModifiers::NONE),
+            (KeyCode::F(2), KeyModifiers::NONE),
+            (KeyCode::Char('q'), KeyModifiers::CONTROL),
+        ] {
+            let mut app = Workspace::open(None).unwrap();
+            plain(&mut app, 'a');
+            draw(&mut app, 80, 24);
+            let rect = new_document_button(&app).unwrap();
+            key(&mut app, code, modifiers);
+            draw(&mut app, 80, 24);
+            click_rect(&mut app, rect);
+            assert_eq!(app.tabs.len(), 1, "{code:?}");
+            assert_eq!(app.editor().document.text(), "a");
+        }
+        let mut app = Workspace::open(None).unwrap();
+        draw(&mut app, 80, 24);
+        let stale = new_document_button(&app).unwrap();
+        app.handle_event(Event::Resize(8, 3));
+        click_rect(&mut app, stale);
+        assert_eq!(app.tabs.len(), 1);
+        draw(&mut app, 8, 3);
+        assert!(new_document_button(&app).is_none());
+        click_rect(&mut app, stale);
+        assert_eq!(app.tabs.len(), 1);
+        draw(&mut app, 80, 24);
+        let rect = new_document_button(&app).unwrap();
+        click_rect(&mut app, rect);
+        assert_eq!(app.tabs.len(), 2);
     }
 
     #[test]
@@ -1247,7 +1344,7 @@ mod tests {
         let active = app
             .tab_hits
             .iter()
-            .find(|(_, index)| *index == app.active)
+            .find(|(_, target)| *target == tabs::Target::Activate(app.active))
             .unwrap()
             .0;
         let first = &terminal.backend().buffer()[(active.x, active.y)];
@@ -1259,7 +1356,7 @@ mod tests {
         let inactive = app
             .tab_hits
             .iter()
-            .find(|(_, index)| *index != app.active)
+            .find(|(_, target)| matches!(target, tabs::Target::Activate(index) if *index != app.active))
             .unwrap()
             .0;
         assert_ne!(
@@ -1342,7 +1439,7 @@ mod tests {
                 let active = app
                     .tab_hits
                     .iter()
-                    .find(|(_, i)| *i == app.active)
+                    .find(|(_, target)| *target == tabs::Target::Activate(app.active))
                     .unwrap()
                     .0;
                 assert!(
@@ -1679,7 +1776,7 @@ mod tests {
         let first = app
             .tab_hits
             .iter()
-            .find(|(_, index)| *index == 0)
+            .find(|(_, target)| *target == tabs::Target::Activate(0))
             .unwrap()
             .0;
         click_rect(&mut app, first);
