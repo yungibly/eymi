@@ -118,6 +118,7 @@ pub struct App {
     help_scroll: usize,
     reload_prompt_visible: Cell<bool>,
     last_disk_change: Option<ExternalChange>,
+    word_count: Cell<Option<(u64, usize)>>,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -382,6 +383,7 @@ impl App {
             help_scroll: 0,
             reload_prompt_visible: Cell::new(false),
             last_disk_change: None,
+            word_count: Cell::new(None),
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -1666,12 +1668,83 @@ impl App {
         }
     }
 
-    fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+    fn source_word_count(&self) -> usize {
+        let revision = self.document.revision();
+        if let Some((cached_revision, count)) = self.word_count.get()
+            && cached_revision == revision
+        {
+            return count;
+        }
+        let count = self.document.text().unicode_words().count();
+        self.word_count.set(Some((revision, count)));
+        count
+    }
+
+    /// Context takes priority over passive metadata. Search geometry belongs to
+    /// the editor slice even when Workspace redraws this footer at full width.
+    fn footer_context(&self, width: u16) -> Option<String> {
+        if !self.message.is_empty() {
+            return Some(safe_text(&self.message));
+        }
+        let Overlay::Search { replace } = self.overlay else {
+            return None;
+        };
+        if !self.search_ready() {
+            return Some(
+                if width >= 29 {
+                    "Resize to search · Esc Close"
+                } else {
+                    "Esc Close"
+                }
+                .into(),
+            );
+        }
+        let count = self.search_count();
+        let count_in_footer = !self.search_inline()
+            && self.terminal_width.saturating_sub(2)
+                < 8 + 8 + 1 + UnicodeWidthStr::width(count.as_str()).max(10) as u16
+            && !self.search.query.text().is_empty();
+        let guidance = if count_in_footer {
+            if usize::from(width) >= UnicodeWidthStr::width(count.as_str()) + 13 {
+                format!("{count} · Esc Close")
+            } else if usize::from(width) >= UnicodeWidthStr::width(count.as_str()) + 6 {
+                format!("{count} Esc")
+            } else {
+                count
+            }
+        } else if replace && self.search.focus == Focus::Replacement {
+            if width < 60 {
+                "Enter: replace · Tab Find · Esc Close".into()
+            } else {
+                "Enter: replace + next · Tab Find · Esc Close".into()
+            }
+        } else if replace {
+            "Enter Next · Tab With · Esc Close".into()
+        } else {
+            "Enter Next · ^R Replace · Esc Close".into()
+        };
+        Some(if self.search.wrapped {
+            format!("Wrapped · {guidance}")
+        } else {
+            guidance
+        })
+    }
+
+    /// Render one segmented status line. The caller may pass the full frame
+    /// after painting other panes; this does not alter editor or search geometry.
+    pub(crate) fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        let area = area.intersection(frame.area());
         if area.height < 2 || area.width == 0 {
             return;
         }
         let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
-        frame.render_widget(Block::default().style(chrome_style()), footer);
+        let colors = theme::chrome_palette();
+        let base = colors.status.style();
+        let badge_style = colors.status_accent.style().add_modifier(Modifier::BOLD);
+        let secondary = colors.status_secondary.style();
+        let position_style = colors.status_secondary.style();
+        let warning = colors.status_warning.style();
+        frame.render_widget(Block::default().style(base), footer);
         let head = self.document.selection().head;
         let line = self.document.text()[..head]
             .graphemes(true)
@@ -1685,78 +1758,81 @@ impl App {
             .graphemes(true)
             .count()
             + 1;
-        let search = matches!(self.overlay, Overlay::Search { .. });
-        let guidance = match self.overlay {
-            Overlay::Search { .. } if !self.search_ready() => "Resize to search · Esc Close",
-            Overlay::Search { replace: true } if self.search.focus == Focus::Replacement => {
-                if area.width < 60 {
-                    "Enter: replace · Tab Find · Esc Close"
+        let location = format!(" Ln {line}, Col {col} ");
+        if let Some(context) = self.footer_context(area.width) {
+            let text = format!(" {context}");
+            let text_width = UnicodeWidthStr::width(text.as_str());
+            let show_position =
+                !self.message_is_error && text_width + location.len() < usize::from(footer.width);
+            let width = footer.width
+                - if show_position {
+                    location.len() as u16
                 } else {
-                    "Enter: replace + next · Tab Find · Esc Close"
+                    0
+                };
+            frame.render_widget(
+                Paragraph::new(text).style(if self.message_is_error { warning } else { base }),
+                Rect::new(footer.x, footer.y, width, 1),
+            );
+            if show_position {
+                draw_status_segment(
+                    frame,
+                    footer.right() - location.len() as u16,
+                    footer.y,
+                    &location,
+                    position_style,
+                );
+            }
+            return;
+        }
+        let location = if location.len() <= usize::from(footer.width) {
+            location
+        } else {
+            format!("{line}:{col}")
+        };
+        let location_width = location.len().min(usize::from(footer.width)) as u16;
+        let format = if !self.markdown {
+            "TEXT"
+        } else if self.live {
+            "MARKDOWN"
+        } else {
+            "SOURCE"
+        };
+        let icon = crate::icons::current().file(self.markdown);
+        let badge = if icon.is_empty() {
+            format!(" {format} ")
+        } else {
+            format!(" {icon} {format} ")
+        };
+        let badge_width = UnicodeWidthStr::width(badge.as_str()) as u16;
+        let show_badge = badge_width + location_width <= footer.width;
+        let mut left = footer.x;
+        if show_badge {
+            draw_status_segment(frame, left, footer.y, &badge, badge_style);
+            left += badge_width;
+        }
+        let mut right = footer.right() - location_width;
+        frame.render_widget(
+            Paragraph::new(location).style(position_style),
+            Rect::new(right, footer.y, location_width, 1),
+        );
+        if show_badge && right.saturating_sub(left) >= 11 {
+            let words = self.source_word_count();
+            let count = format!(" {words} {} ", if words == 1 { "word" } else { "words" });
+            if count.len() + 2 <= usize::from(right - left) {
+                draw_status_segment(frame, left, footer.y, &count, secondary);
+                left += count.len() as u16;
+            }
+        }
+        if show_badge {
+            let length = self.document.text().len();
+            let percent = head.saturating_mul(100).checked_div(length).unwrap_or(100);
+            for metadata in [format!(" {percent}% "), " UTF-8 ".into()] {
+                if metadata.len() + 2 <= usize::from(right.saturating_sub(left)) {
+                    right -= metadata.len() as u16;
+                    draw_status_segment(frame, right, footer.y, &metadata, secondary);
                 }
             }
-            Overlay::Search { replace: true } => "Enter Next · Tab With · Esc Close",
-            Overlay::Search { replace: false } => "Enter Next · ^R Replace · Esc Close",
-            Overlay::Help => "↑↓ Scroll · Esc Close",
-            Overlay::SaveAs { .. } => "Enter Save · Esc Cancel",
-            Overlay::Quit => "Y Save · N Discard · Esc Cancel",
-            Overlay::Reload => "Y Reload · N/Esc Keep editing",
-            Overlay::None if area.width < 60 => "F1 Help",
-            Overlay::None => "^S Save · ^F Find · F2 Commands · F1 Help",
-        };
-        let mut left = if !self.message.is_empty() {
-            safe_text(&self.message)
-        } else if search
-            && self.search_ready()
-            && !self.search_inline()
-            && area.width.saturating_sub(2)
-                < 8 + 8 + 1 + UnicodeWidthStr::width(self.search_count().as_str()).max(10) as u16
-            && !self.search.query.text().is_empty()
-        {
-            format!("{} · Esc Close", self.search_count())
-        } else {
-            guidance.into()
-        };
-        if search && self.search.wrapped && self.message.is_empty() {
-            left = format!("Wrapped · {left}");
-        }
-        let right = format!(
-            "{}Ln {line}, Col {col}",
-            if search {
-                ""
-            } else if self.live {
-                "Live · "
-            } else {
-                "Source · "
-            },
-        );
-        let right_width = UnicodeWidthStr::width(right.as_str()) as u16;
-        let left_width = UnicodeWidthStr::width(left.as_str());
-        let show_position = !self.message_is_error
-            && usize::from(area.width) >= left_width + usize::from(right_width) + 4;
-        let style = if self.message_is_error {
-            chrome_style().fg(palette().warning)
-        } else {
-            chrome_muted()
-        };
-        frame.render_widget(
-            Paragraph::new(format!(" {left}")).style(style),
-            Rect::new(
-                footer.x,
-                footer.y,
-                if show_position {
-                    footer.width - right_width - 2
-                } else {
-                    footer.width
-                },
-                1,
-            ),
-        );
-        if show_position {
-            frame.render_widget(
-                Paragraph::new(right).style(chrome_muted()),
-                Rect::new(footer.right() - right_width - 1, footer.y, right_width, 1),
-            );
         }
     }
 
@@ -1816,7 +1892,12 @@ impl App {
 }
 
 fn body_top(height: u16) -> u16 {
-    if height >= 10 { 2 } else { 1 }
+    u16::from(height > 0)
+}
+
+fn draw_status_segment(frame: &mut Frame, x: u16, y: u16, text: &str, style: Style) {
+    let width = UnicodeWidthStr::width(text) as u16;
+    frame.render_widget(Paragraph::new(text).style(style), Rect::new(x, y, width, 1));
 }
 
 fn draw_search_buttons(
@@ -1994,6 +2075,250 @@ mod tests {
         std::fs::write(&path, source).unwrap();
         let app = App::open(Some(path.clone())).unwrap();
         (dir, path, app)
+    }
+
+    fn status_text(terminal: &Terminal<TestBackend>, row: u16) -> String {
+        (0..terminal.backend().buffer().area.width)
+            .map(|x| terminal.backend().buffer()[(x, row)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn status_segments_use_explicit_theme_pairs_without_body_color_bleed() {
+        for theme in [
+            Theme::Dark,
+            Theme::Light,
+            Theme::from_name("Dracula").unwrap(),
+            Theme::from_name("Nord").unwrap(),
+        ] {
+            let mut app = App::new("one two three".into(), None, true);
+            app.set_theme(theme);
+            let colors = theme.chrome_palette();
+            let terminal = draw(&mut app, 100, 24);
+            let buffer = terminal.backend().buffer();
+            assert_eq!(
+                (buffer[(1, 23)].fg, buffer[(1, 23)].bg),
+                (
+                    colors.status_accent.foreground,
+                    colors.status_accent.background
+                )
+            );
+            assert_eq!(
+                (buffer[(50, 23)].fg, buffer[(50, 23)].bg),
+                (colors.status.foreground, colors.status.background)
+            );
+            assert_eq!(
+                (buffer[(98, 23)].fg, buffer[(98, 23)].bg),
+                (
+                    colors.status_secondary.foreground,
+                    colors.status_secondary.background
+                )
+            );
+            assert_eq!(buffer[(50, 22)].bg, theme.palette().background);
+            app.set_message("Disk conflict; your edits are intact");
+            let terminal = draw(&mut app, 100, 24);
+            for x in 0..100 {
+                let cell = &terminal.backend().buffer()[(x, 23)];
+                assert_eq!(
+                    (cell.fg, cell.bg),
+                    (
+                        colors.status_warning.foreground,
+                        colors.status_warning.background
+                    )
+                );
+            }
+        }
+        theme::set_theme(Theme::Dark);
+    }
+
+    #[test]
+    fn optional_icons_keep_textual_status_labels_and_never_enter_the_document() {
+        let source = "one two";
+        let mut app = App::new(source.into(), None, true);
+        crate::icons::set(crate::icons::IconSet::Plain);
+        let plain = status_text(&draw(&mut app, 80, 24), 23);
+        crate::icons::set(crate::icons::IconSet::Nerd);
+        let nerd = status_text(&draw(&mut app, 80, 24), 23);
+        for width in 0..=40 {
+            draw(&mut app, width, 4);
+        }
+        crate::icons::set(crate::icons::IconSet::Plain);
+        assert!(plain.starts_with(" MARKDOWN "));
+        assert!(
+            !plain
+                .chars()
+                .any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c))
+        );
+        assert!(nerd.contains(crate::icons::IconSet::Nerd.file(true)));
+        assert!(nerd.contains("MARKDOWN"));
+        assert!(nerd.contains("Ln 1, Col 1"));
+        assert_eq!(app.document.text(), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn one_tab_row_leaves_the_first_document_row_visible_at_every_height() {
+        for height in 0..=24 {
+            let mut app = App::new("first line\nsecond line".into(), None, true);
+            let terminal = draw(&mut app, 80, height);
+            assert_eq!(app.viewport.y, u16::from(height > 0));
+            assert_eq!(app.viewport.height, height.saturating_sub(2));
+            if height >= 3 {
+                assert!(status_text(&terminal, 1).contains("first line"));
+            }
+        }
+    }
+
+    #[test]
+    fn idle_statusline_has_format_and_position_without_redundant_chrome() {
+        let mut app = App::new("one\r\n界e\u{301}".into(), None, true);
+        app.document.set_caret(app.document.text().len()).unwrap();
+        let terminal = draw(&mut app, 100, 24);
+        let footer = status_text(&terminal, 23);
+        assert!(footer.starts_with(" MARKDOWN "));
+        assert!(footer.contains("3 words"));
+        assert!(footer.contains("Ln 2, Col 3"));
+        assert!(footer.contains("100%"));
+        assert!(footer.contains("UTF-8"));
+        for redundant in [
+            "Live", "Source", "Untitled", "Marklane", "F1", "^S", "Commands",
+        ] {
+            assert!(!footer.contains(redundant), "{footer}");
+        }
+        key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
+        let footer = status_text(&draw(&mut app, 80, 24), 23);
+        assert!(footer.starts_with(" SOURCE "));
+        assert!(!footer.contains("MARKDOWN"));
+        let mut plain = App::new("plain text".into(), None, false);
+        let footer = status_text(&draw(&mut plain, 80, 24), 23);
+        assert!(footer.starts_with(" TEXT "));
+        assert!(!footer.contains("SOURCE"));
+    }
+
+    #[test]
+    fn statusline_counts_follow_edits_undo_and_redo() {
+        let mut app = App::new("one two".into(), None, true);
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("2 words"));
+        app.document.set_caret(app.document.text().len()).unwrap();
+        app.document.insert(" three");
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("3 words"));
+        app.document.undo();
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("2 words"));
+        app.document.redo();
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("3 words"));
+    }
+
+    #[test]
+    fn statusline_prioritizes_messages_and_errors_over_metadata() {
+        let mut app = App::new("one two three".into(), None, true);
+        app.inform("Saved note.md");
+        let footer = status_text(&draw(&mut app, 80, 24), 23);
+        assert!(footer.contains("Saved note.md"));
+        assert!(footer.contains("Ln 1, Col 1"));
+        assert!(!footer.contains("MARKDOWN"));
+        app.set_message(
+            "Disk file changed; your local text is intact. Reload or Save As to continue.",
+        );
+        let footer = status_text(&draw(&mut app, 80, 24), 23);
+        assert!(footer.contains("Reload or Save As to continue."));
+        for optional in ["MARKDOWN", "words", "Ln 1", "UTF-8", "%"] {
+            assert!(!footer.contains(optional), "{footer}");
+        }
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("Disk file changed"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(status_text(&draw(&mut app, 80, 24), 23).starts_with(" MARKDOWN "));
+    }
+
+    #[test]
+    fn full_width_status_keeps_narrow_editor_search_count_and_wrap_feedback() {
+        let mut app = App::new("cat cat cat".into(), None, true);
+        search(&mut app, "cat", false);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.search.wrapped = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                app.draw_in(frame, Rect::new(56, 0, 24, 12), true);
+                app.draw_footer(frame, frame.area());
+            })
+            .unwrap();
+        let footer = status_text(&terminal, 11);
+        assert!(footer.contains("2/3"), "{footer}");
+        assert!(footer.contains("Wrapped"), "{footer}");
+        assert!(footer.contains("Esc Close"), "{footer}");
+        let screen: String = (0..12).map(|row| status_text(&terminal, row)).collect();
+        assert_eq!(screen.matches("2/3").count(), 1);
+        assert_eq!(app.terminal_width, 24);
+        assert!(
+            app.search_geometry
+                .fields
+                .iter()
+                .all(|field| field.area.x >= 56)
+        );
+        assert_eq!(app.document.text(), "cat cat cat");
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn footer_clips_to_its_slice_and_never_overwrites_the_only_tab_row() {
+        let app = App::new("界e\u{301} 👩🏽‍💻".into(), None, true);
+        for width in 0..=80 {
+            for height in [0, 1, 2, 4] {
+                let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+                let area = Rect::new(7, 3, width, height);
+                terminal
+                    .draw(|frame| {
+                        frame.render_widget(
+                            Block::default().style(Style::default().bg(Color::Magenta)),
+                            frame.area(),
+                        );
+                        app.draw_footer(frame, area);
+                    })
+                    .unwrap();
+                for y in 0..12 {
+                    for x in 0..100 {
+                        let footer_cell = width > 0
+                            && height >= 2
+                            && x >= area.x
+                            && x < area.right()
+                            && y == area.bottom() - 1;
+                        if !footer_cell {
+                            assert_eq!(
+                                terminal.backend().buffer()[(x, y)].bg,
+                                Color::Magenta,
+                                "{area:?} at{x},{y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dialogs_do_not_repeat_their_instructions_in_the_statusline() {
+        let mut app = App::new("one two".into(), None, true);
+        for overlay in [
+            Overlay::Help,
+            Overlay::Quit,
+            Overlay::Reload,
+            Overlay::SaveAs {
+                path: String::new(),
+                quit_after: false,
+            },
+        ] {
+            app.overlay = overlay;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal
+                .draw(|frame| app.draw_footer(frame, frame.area()))
+                .unwrap();
+            let footer = status_text(&terminal, 23);
+            assert!(footer.starts_with(" MARKDOWN "));
+            for duplicate in ["Esc", "Enter", "Reload", "Discard", "Scroll", "Save"] {
+                assert!(!footer.contains(duplicate), "{footer}");
+            }
+        }
     }
 
     #[test]
@@ -2798,7 +3123,7 @@ mod tests {
     #[test]
     fn compact_search_keeps_usable_fields_one_count_and_more_document_rows() {
         for (width, height, find_rows, replace_rows, body_rows) in
-            [(80, 24, 1, 2, 21), (40, 12, 2, 3, 9)]
+            [(80, 24, 1, 2, 22), (40, 12, 2, 3, 10)]
         {
             let mut app = App::new("cat cat cat".into(), None, true);
             let idle = crate::simulation::snapshot(&mut app, width, height).unwrap();
@@ -2944,7 +3269,7 @@ mod tests {
             for x in 0..width {
                 assert_ne!(buffer[(x, 0)].bg, Color::Reset);
                 assert_ne!(buffer[(x, 23)].bg, Color::Reset);
-                assert_eq!(buffer[(x, 1)].bg, palette().background);
+                assert_eq!(buffer[(x, app.viewport.y + 1)].bg, palette().background);
                 assert_eq!(
                     buffer[(x, app.viewport.bottom() - 1)].bg,
                     palette().background
