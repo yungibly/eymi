@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / Rust ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+        rust: [stable, '1.89.0']
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+      RUST_TOOLCHAIN: ${{ matrix.rust }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install style and lint components
+        if: matrix.rust == 'stable'
+        run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
+      - name: Formatting
+        if: matrix.rust == 'stable'
+        run: cargo +stable fmt --all --check
+      - name: Strict Clippy
+        if: matrix.rust == 'stable'
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
+      - name: Tests, including real PTY integration
+        run: cargo +"$RUST_TOOLCHAIN" test --locked
+      - name: Theme attribution and generated catalog
+        if: matrix.rust == 'stable'
+        run: python3 tools/import-themes.py --check --self-test
+      - name: Release packaging regressions
+        if: matrix.rust == 'stable'
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py'
