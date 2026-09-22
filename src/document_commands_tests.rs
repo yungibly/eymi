@@ -527,3 +527,322 @@ fn separate_inline_spans_do_not_lose_their_outer_markers() {
         assert_eq!(doc.text(), source);
     }
 }
+
+#[test]
+fn line_moves_keep_bom_separator_order_final_newline_and_relative_caret() {
+    for (source, offset, up, expected, after) in [
+        (
+            "one\r\ntwo\nthree\rfour",
+            6,
+            true,
+            "two\r\none\nthree\rfour",
+            1,
+        ),
+        (
+            "one\r\ntwo\nthree\rfour",
+            6,
+            false,
+            "one\r\nthree\ntwo\rfour",
+            12,
+        ),
+        ("\u{feff}a\r\nb\nc", 3, false, "\u{feff}b\r\na\nc", 6),
+        ("a\r\nlast", 7, true, "last\r\na", 4),
+        ("a\nlast\n", 3, true, "last\na\n", 1),
+    ] {
+        let mut doc = Document::new(source);
+        doc.set_caret(offset).unwrap();
+        assert!(if up {
+            doc.move_lines_up()
+        } else {
+            doc.move_lines_down()
+        });
+        assert_eq!(doc.text(), expected);
+        assert_eq!(doc.selection(), Selection::caret(after));
+        assert_valid(&doc);
+        assert!(doc.undo());
+        assert_eq!(doc.text(), source);
+        assert_eq!(doc.selection(), Selection::caret(offset));
+        assert!(!doc.can_undo());
+        assert!(!doc.is_dirty());
+        assert!(doc.redo());
+        assert_eq!(doc.text(), expected);
+        assert_eq!(doc.selection(), Selection::caret(after));
+    }
+}
+
+#[test]
+fn line_moves_retain_direction_and_exclude_selection_end_at_next_line_start() {
+    let source = "top\r\ne\u{301}\n👩🏽‍💻\rbottom";
+    let first = source.find('e').unwrap();
+    let end = source.find("bottom").unwrap();
+    for up in [true, false] {
+        for reversed in [false, true] {
+            let before = if reversed {
+                Selection {
+                    anchor: end,
+                    head: first,
+                }
+            } else {
+                Selection {
+                    anchor: first,
+                    head: end,
+                }
+            };
+            let mut doc = Document::new(source);
+            doc.set_selection(before).unwrap();
+            assert!(if up {
+                doc.move_lines_up()
+            } else {
+                doc.move_lines_down()
+            });
+            let expected = if up {
+                "e\u{301}\r\n👩🏽‍💻\ntop\rbottom"
+            } else {
+                "top\r\nbottom\ne\u{301}\r👩🏽‍💻"
+            };
+            assert_eq!(doc.text(), expected);
+            assert_eq!(
+                doc.selected_text(),
+                if up {
+                    "e\u{301}\r\n👩🏽‍💻\n"
+                } else {
+                    "e\u{301}\r👩🏽‍💻"
+                }
+            );
+            assert_eq!(doc.selection().anchor > doc.selection().head, reversed);
+            assert_valid(&doc);
+            doc.undo();
+            assert_eq!(doc.selection(), before);
+            assert_eq!(doc.text(), source);
+        }
+    }
+}
+
+#[test]
+fn line_duplicates_follow_new_copy_and_preserve_source_bytes() {
+    for (source, offset, up, expected, after) in [
+        ("alpha\r\nbeta\nend", 8, true, "alpha\r\nbeta\nbeta\nend", 8),
+        (
+            "alpha\r\nbeta\nend",
+            8,
+            false,
+            "alpha\r\nbeta\nbeta\nend",
+            13,
+        ),
+        ("\u{feff}é\r\nx", 3, true, "\u{feff}é\r\né\r\nx", 3),
+        ("\u{feff}é\r\nx", 3, false, "\u{feff}é\r\né\r\nx", 7),
+        ("a\r\nlast", 5, true, "a\r\nlast\r\nlast", 5),
+        ("a\r\nlast", 5, false, "a\r\nlast\r\nlast", 11),
+        ("a\n", 2, true, "a\n\n", 2),
+        ("a\n", 2, false, "a\n\n", 3),
+        ("solo", 2, false, "solo\nsolo", 7),
+    ] {
+        let mut doc = Document::new(source);
+        doc.set_caret(offset).unwrap();
+        assert!(if up {
+            doc.duplicate_lines_up()
+        } else {
+            doc.duplicate_lines_down()
+        });
+        assert_eq!(doc.text(), expected);
+        assert_eq!(doc.selection(), Selection::caret(after));
+        assert_valid(&doc);
+        doc.undo();
+        assert_eq!(doc.text(), source);
+        assert_eq!(doc.selection(), Selection::caret(offset));
+        assert!(!doc.can_undo());
+        doc.redo();
+        assert_eq!(doc.text(), expected);
+        assert_eq!(doc.selection(), Selection::caret(after));
+    }
+}
+
+#[test]
+fn line_duplicates_copy_whole_lines_but_keep_partial_reversed_selection() {
+    for up in [true, false] {
+        let source = "first\r\n  e\u{301}cho\n👩🏽‍💻 last\rend";
+        let start = source.find('e').unwrap();
+        let end = source.find(" last").unwrap();
+        let before = Selection {
+            anchor: end,
+            head: start,
+        };
+        let mut doc = Document::new(source);
+        doc.set_selection(before).unwrap();
+        assert!(if up {
+            doc.duplicate_lines_up()
+        } else {
+            doc.duplicate_lines_down()
+        });
+        assert_eq!(
+            doc.text(),
+            "first\r\n  e\u{301}cho\n👩🏽‍💻 last\r  e\u{301}cho\n👩🏽‍💻 last\rend"
+        );
+        assert_eq!(doc.selected_text(), "e\u{301}cho\n👩🏽‍💻");
+        assert!(doc.selection().anchor > doc.selection().head);
+        assert_eq!(
+            doc.selection().head,
+            if up {
+                start
+            } else {
+                start + "  e\u{301}cho\n👩🏽‍💻 last\r".len()
+            }
+        );
+        assert_valid(&doc);
+        doc.undo();
+        assert_eq!(doc.selection(), before);
+        assert_eq!(doc.text(), source);
+    }
+}
+
+#[test]
+fn line_duplicates_exclude_next_row_at_selection_end_and_do_not_copy_bom() {
+    for up in [true, false] {
+        let source = "\u{feff}one\r\ntwo\nthree";
+        let end = source.find("three").unwrap();
+        let mut doc = Document::new(source);
+        doc.set_selection(Selection {
+            anchor: 0,
+            head: end,
+        })
+        .unwrap();
+        assert!(if up {
+            doc.duplicate_lines_up()
+        } else {
+            doc.duplicate_lines_down()
+        });
+        assert_eq!(doc.text(), "\u{feff}one\r\ntwo\none\r\ntwo\nthree");
+        assert_eq!(doc.text().matches('\u{feff}').count(), 1);
+        assert_eq!(
+            doc.selected_text(),
+            if up {
+                "\u{feff}one\r\ntwo\n"
+            } else {
+                "one\r\ntwo\n"
+            }
+        );
+        doc.undo();
+        assert_eq!(doc.text(), source);
+        assert_eq!(
+            doc.selection(),
+            Selection {
+                anchor: 0,
+                head: end
+            }
+        );
+    }
+}
+
+#[test]
+fn line_no_ops_preserve_selection_revision_redo_and_saved_state() {
+    for (source, offset, command) in [
+        ("", 0, 0),
+        ("", 0, 2),
+        ("\u{feff}", 0, 3),
+        ("first\nlast", 0, 0),
+        ("first\nlast", 6, 1),
+        ("first\nlast\n", 11, 0),
+        ("first\nlast\n", 11, 1),
+        ("same\nsame", 1, 1),
+        ("a\n\nb", 2, 1),
+        ("a\n\u{feff}b", 2, 0),
+        // A standalone CR must not merge with the LF from a moved empty row.
+        ("a\rb\n\nc", 4, 0),
+    ] {
+        let mut doc = Document::new(source);
+        doc.insert("temporary");
+        doc.undo();
+        doc.set_caret(offset).unwrap();
+        let revision = doc.revision();
+        let changed = match command {
+            0 => doc.move_lines_up(),
+            1 => doc.move_lines_down(),
+            2 => doc.duplicate_lines_up(),
+            _ => doc.duplicate_lines_down(),
+        };
+        assert!(!changed, "{source:?}, {offset}, {command}");
+        assert_eq!(doc.text(), source);
+        assert_eq!(doc.selection(), Selection::caret(offset));
+        assert_eq!(doc.revision(), revision);
+        assert!(!doc.can_undo());
+        assert!(doc.can_redo());
+        assert!(!doc.is_dirty());
+    }
+}
+
+#[test]
+fn line_commands_end_typing_groups_and_create_separate_undo_steps() {
+    let mut doc = Document::new("first\nlast");
+    doc.type_text("one");
+    assert!(!doc.move_lines_up());
+    doc.type_text("two");
+    doc.undo();
+    assert_eq!(doc.text(), "onefirst\nlast");
+    assert!(doc.move_lines_down());
+    doc.type_text("three");
+    doc.undo();
+    assert_eq!(doc.text(), "last\nonefirst");
+    doc.undo();
+    assert_eq!(doc.text(), "onefirst\nlast");
+    doc.undo();
+    assert_eq!(doc.text(), "first\nlast");
+    assert!(!doc.can_undo());
+}
+
+#[test]
+fn line_operations_keep_unicode_boundaries_and_round_trip_every_selection() {
+    for source in [
+        "",
+        "\u{feff}",
+        "a\n",
+        "\n\n",
+        "a\r\nb\rc\n",
+        "a\rb\n\nc",
+        "\u{feff}e\u{301}\r\n👩🏽‍💻\n🇺🇸",
+        "\u{301}\r\n\u{feff}x\ry",
+    ] {
+        let boundaries: Vec<_> = source
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .chain(std::iter::once(source.len()))
+            .collect();
+        for &anchor in &boundaries {
+            for &head in &boundaries {
+                for command in 0..4 {
+                    let mut doc = Document::new(source);
+                    let before = Selection { anchor, head };
+                    doc.set_selection(before).unwrap();
+                    let changed = match command {
+                        0 => doc.move_lines_up(),
+                        1 => doc.move_lines_down(),
+                        2 => doc.duplicate_lines_up(),
+                        _ => doc.duplicate_lines_down(),
+                    };
+                    assert_valid(&doc);
+                    assert_eq!(
+                        doc.text().starts_with('\u{feff}'),
+                        source.starts_with('\u{feff}')
+                    );
+                    assert_eq!(
+                        doc.text().ends_with(['\r', '\n']),
+                        source.ends_with(['\r', '\n']),
+                        "{source:?}, {before:?}, {command}"
+                    );
+                    if changed {
+                        let after = (doc.text().to_owned(), doc.selection());
+                        doc.undo();
+                        assert_eq!(doc.text(), source);
+                        assert_eq!(doc.selection(), before);
+                        assert!(!doc.can_undo());
+                        doc.redo();
+                        assert_eq!((doc.text(), doc.selection()), (after.0.as_str(), after.1));
+                    } else {
+                        assert_eq!(doc.text(), source);
+                        assert_eq!(doc.selection(), before);
+                        assert!(!doc.can_undo());
+                    }
+                }
+            }
+        }
+    }
+}

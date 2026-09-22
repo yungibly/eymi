@@ -1,4 +1,8 @@
 //! Markdown-aware edit commands. Literal insertion never passes through helpers.
+mod lines;
+
+pub(crate) use lines::rearrange as rearrange_lines;
+
 use std::ops::Range;
 
 use pulldown_cmark::{Event, Parser, Tag};

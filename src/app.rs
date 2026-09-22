@@ -57,6 +57,7 @@ const HELP_LINES: &[&str] = &[
     "Ctrl+B: bold · Alt+I: italic · Alt+`: inline code",
     "Tab with selection: indent · Shift+Tab: outdent",
     "Ctrl+] / Ctrl+[: indent / outdent source lines",
+    "Alt+Up/Down: move lines · add Shift to duplicate",
     "Ctrl+Z: undo · Ctrl+Y / Ctrl+Shift+Z: redo",
     "Typing groups by word; paste is one undo step.",
     "Enter continues lists · Alt+Enter: literal newline",
@@ -71,6 +72,7 @@ const HELP_LINES: &[&str] = &[
     "F7/F8 or Ctrl+PageUp/PageDown: switch tabs",
     "F2 / Ctrl+P: commands · Ctrl+G: go to source line",
     "F9: focus/hide sidebar · arrows/Enter: navigate",
+    "F10: find open document · F11: find heading",
     "Ctrl+F: find · Ctrl+R: replace · F3/Shift+F3: next/prev",
     "Search: Tab switches fields; With Enter replaces one.",
     "Alt+R/A: replace one/all · Escape closes search",
@@ -566,6 +568,20 @@ impl App {
         }
         if alt {
             match key.code {
+                KeyCode::Up => {
+                    if shift {
+                        self.document.duplicate_lines_up();
+                    } else {
+                        self.document.move_lines_up();
+                    }
+                }
+                KeyCode::Down => {
+                    if shift {
+                        self.document.duplicate_lines_down();
+                    } else {
+                        self.document.move_lines_down();
+                    }
+                }
                 KeyCode::Left => self.document.move_word_left(shift),
                 KeyCode::Right => self.document.move_word_right(shift),
                 KeyCode::Backspace => {
@@ -2070,6 +2086,64 @@ fn is_markdown(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+    #[test]
+    fn alt_arrows_move_and_duplicate_source_lines_in_both_views() {
+        for live in [false, true] {
+            for markdown in [false, true] {
+                let mut app = App::new("one\r\né👩🏽‍💻\nthree".into(), None, live);
+                app.markdown = markdown;
+                app.document.set_caret(7).unwrap();
+                draw(&mut app, 50, 12);
+                key(&mut app, KeyCode::Up, KeyModifiers::ALT);
+                assert_eq!(app.document.text(), "é👩🏽‍💻\r\none\nthree");
+                assert_eq!(app.document.selection(), Selection::caret(2));
+                key(&mut app, KeyCode::Down, KeyModifiers::ALT);
+                assert_eq!(app.document.text(), "one\r\né👩🏽‍💻\nthree");
+                key(
+                    &mut app,
+                    KeyCode::Down,
+                    KeyModifiers::ALT | KeyModifiers::SHIFT,
+                );
+                assert_eq!(app.document.text(), "one\r\né👩🏽‍💻\né👩🏽‍💻\nthree");
+                key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+                assert_eq!(app.document.text(), "one\r\né👩🏽‍💻\nthree");
+                key(
+                    &mut app,
+                    KeyCode::Up,
+                    KeyModifiers::ALT | KeyModifiers::SHIFT,
+                );
+                assert_eq!(app.document.text(), "one\r\né👩🏽‍💻\né👩🏽‍💻\nthree");
+                assert_eq!(app.document.selection(), Selection::caret(7));
+            }
+        }
+    }
+
+    #[test]
+    fn line_shortcuts_ignore_releases_and_stay_inside_overlays() {
+        let mut app = App::new("one\ntwo".into(), None, true);
+        for code in [KeyCode::Up, KeyCode::Down] {
+            app.handle_event(Event::Key(KeyEvent::new_with_kind(
+                code,
+                KeyModifiers::ALT | KeyModifiers::SHIFT,
+                KeyEventKind::Release,
+            )));
+        }
+        assert_eq!(app.document.text(), "one\ntwo");
+        app.open_help();
+        key(
+            &mut app,
+            KeyCode::Down,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.document.text(), "one\ntwo");
+        assert!(!app.document.can_undo());
+        assert!(
+            HELP_LINES
+                .iter()
+                .any(|line| line.contains("F10") && line.contains("F11"))
+        );
+    }
 
     fn disk_app(source: &str) -> (tempfile::TempDir, PathBuf, App) {
         let dir = tempfile::tempdir().unwrap();

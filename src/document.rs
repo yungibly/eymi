@@ -1218,6 +1218,26 @@ impl Document {
         crate::editing::indent_lines(self, true)
     }
 
+    /// Move affected source lines up once, preserving separators and selection.
+    pub fn move_lines_up(&mut self) -> bool {
+        crate::editing::rearrange_lines(self, true, false)
+    }
+
+    /// Move affected source lines down once, preserving separators and selection.
+    pub fn move_lines_down(&mut self) -> bool {
+        crate::editing::rearrange_lines(self, false, false)
+    }
+
+    /// Duplicate affected source lines above and select the new copy.
+    pub fn duplicate_lines_up(&mut self) -> bool {
+        crate::editing::rearrange_lines(self, true, true)
+    }
+
+    /// Duplicate affected source lines below and select the new copy.
+    pub fn duplicate_lines_down(&mut self) -> bool {
+        crate::editing::rearrange_lines(self, false, true)
+    }
+
     pub fn toggle_inline(&mut self, style: crate::editing::InlineStyle) -> bool {
         crate::editing::toggle_inline(self, style)
     }
