@@ -1,7 +1,7 @@
 //! Searchable choices with geometry-gated acceptance and a separate query document.
 use super::{chrome_active, chrome_muted, chrome_style, clipped};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use marklane::Document;
+use eymi::Document;
 use ratatui::{
     Frame,
     layout::Rect,

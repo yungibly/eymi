@@ -1,6 +1,6 @@
 //! A conservative, source-anchored projection. Unrecognized syntax stays visible.
 use crate::theme::{self, Theme, palette};
-use marklane::{
+use eymi::{
     Selection,
     markdown::{BlockKind, MarkdownSnapshot, Task},
 };
@@ -597,7 +597,7 @@ pub fn safe_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marklane::Document;
+    use eymi::Document;
     fn project(text: &str, caret: usize, width: usize, live: bool) -> Projection {
         let doc = Document::new(text);
         Projection::build(

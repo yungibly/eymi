@@ -21,7 +21,7 @@ const POP: &[u8] = b"\x1b[<1u";
 const LEAVE: &[u8] = b"\x1b[?1049l";
 const SAVE: &[u8] = b"\x1b[115;5u";
 const QUIT: &[u8] = b"\x1b[113;5u";
-const EXITED: &[u8] = b"MARKLANE_EXIT=0";
+const EXITED: &[u8] = b"EYMI_EXIT=0";
 
 fn count(bytes: &[u8], sequence: &[u8]) -> usize {
     bytes
@@ -109,9 +109,9 @@ impl Session {
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
-            "\"$@\"\neditor_status=$?\nprintf '\\nMARKLANE_EXIT=%s\\n' \"$editor_status\"\nIFS= read -r release_line\nexit \"$editor_status\"",
-            "marklane-protocol",
-            env!("CARGO_BIN_EXE_marklane"),
+            "\"$@\"\neditor_status=$?\nprintf '\\nEYMI_EXIT=%s\\n' \"$editor_status\"\nIFS= read -r release_line\nexit \"$editor_status\"",
+            "eymi-protocol",
+            env!("CARGO_BIN_EXE_eymi"),
         ]);
         if let Some(state) = state {
             command
@@ -357,18 +357,40 @@ fn word_selection_formatting_indentation_and_typing_undo_reach_the_core() {
 
 #[test]
 fn crash_recovery_and_saved_themes_survive_a_real_process_restart() {
+    recovery_restart(false);
+}
+
+#[test]
+fn existing_legacy_preferences_and_recovery_survive_an_eymi_restart() {
+    recovery_restart(true);
+}
+
+fn recovery_restart(legacy: bool) {
     let state = tempfile::tempdir().unwrap();
+    let app_directory = if legacy { "marklane" } else { "eymi" };
+    if legacy {
+        fs::create_dir_all(state.path().join("config/marklane")).unwrap();
+        fs::create_dir_all(state.path().join("state/marklane")).unwrap();
+    }
     let mut crashed = Session::start_with_state("disk baseline\n", Some(state.path()));
     // Apply a familiar built-in theme through both searchable pickers.
     crashed.send(b"\x10theme\r");
     crashed.until("theme picker", |s| count(&s.transcript, b"Preview") > 0);
     crashed.send(b"\x1b[200~Catppuccin Mocha\x1b[201~\r");
-    let settings = state.path().join("config/marklane/settings.conf");
+    let settings = state
+        .path()
+        .join("config")
+        .join(app_directory)
+        .join("settings.conf");
     crashed.until("persisted theme", |_| {
         fs::read_to_string(&settings).is_ok_and(|text| text.contains("theme=catppuccin-mocha"))
     });
     crashed.send("\x1b[200~unsaved 界\n\x1b[201~".as_bytes());
-    let recovery = state.path().join("state/marklane/recovery");
+    let recovery = state
+        .path()
+        .join("state")
+        .join(app_directory)
+        .join("recovery");
     crashed.until("durable recovery checkpoint", |_| {
         fs::read_dir(&recovery).is_ok_and(|sessions| {
             sessions.filter_map(Result::ok).any(|entry| {
@@ -425,6 +447,10 @@ fn crash_recovery_and_saved_themes_survive_a_real_process_restart() {
         "newer disk contents\n"
     );
     restored.finish();
+    if legacy {
+        assert!(!state.path().join("config/eymi").exists());
+        assert!(!state.path().join("state/eymi").exists());
+    }
     assert!(
         fs::read_to_string(settings)
             .unwrap()

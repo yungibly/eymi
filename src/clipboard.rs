@@ -189,7 +189,7 @@ impl Worker {
                 .take()
                 .ok_or_else(|| Error::Unavailable("System clipboard worker unavailable".into()))?;
             thread::Builder::new()
-                .name("marklane-clipboard".into())
+                .name("eymi-clipboard".into())
                 .spawn(move || {
                     // The worker owns the native handle for its lifetime, including X11 selection ownership.
                     let mut backend = factory();

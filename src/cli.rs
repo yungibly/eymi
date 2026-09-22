@@ -1,10 +1,10 @@
 use crate::{icons::IconSet, theme::Theme};
 use std::{ffi::OsString, io, path::PathBuf};
 
-pub const HELP: &str = "Marklane — a source-preserving Markdown editor
+pub const HELP: &str = "Eymi — a source-preserving Markdown editor
 
-Usage: marklane [--theme NAME] [--source] [FILE]
-       marklane --snapshot [--snapshot-size WIDTHxHEIGHT] [--theme NAME] [FILE]
+Usage: eymi [--theme NAME] [--source] [FILE]
+       eymi --snapshot [--snapshot-size WIDTHxHEIGHT] [--theme NAME] [FILE]
 
 Without FILE, opens an untitled Markdown document. Use -- before a filename
 that starts with a dash. Files must be UTF-8 text, at most 8 MiB.

@@ -1,8 +1,8 @@
-# Marklane
+# Eymi
 
 A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
 
-**Status: under active development.** The product and command name is **Marklane** / `marklane`; the repository directory remains `md-term-editor`. Build locally to try the UI polish checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
+**Status: under active development.** The product and command name is **Eymi** / `eymi`; the repository directory remains `md-term-editor`. Build locally to try the UI polish checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
 
 The central idea: make a Markdown document pleasant to work in directly, with dependable cursor movement and selection, while preserving the underlying file exactly outside intentional edits.
 
@@ -23,9 +23,9 @@ cargo run --locked -- --snapshot --snapshot-size 160x45 --theme "Catppuccin Moch
 cargo run --locked -- --list-themes
 ```
 
-To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin Mocha" path/to/note.md`. A saved theme is used by default, falling back to Sage Dark. `--theme` overrides the saved preference for that launch. With no filename, Marklane opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
+To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin Mocha" path/to/note.md`. A saved theme is used by default, falling back to Sage Dark. `--theme` overrides the saved preference for that launch. With no filename, Eymi opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
 
-Marklane has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
+Eymi has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
 
 The writing surface uses explicit paired colors, a centered live column up to 88 cells wide, and word-aware prose wrapping. Source view uses the available width; code and tables retain source-oriented wrapping. A single tab row keeps the filename visible, with a distinct active tab and clickable overflow arrows. The themed status bar shows document type, source-word count, position, and encoding as space permits. It displays SOURCE when Markdown source view is active. Commands are discoverable through F1 and F2; contextual search guidance and errors appear when needed. Find uses one row at 80 columns; Replace adds one more. Narrow windows place actions on a separate row. Routine feedback clears on the next input, while actionable errors remain visible until dismissed or resolved.
 
@@ -35,11 +35,11 @@ F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes
 
 **624 built-in themes** include Catppuccin, Dracula, Nord, Gruvbox, Solarized, Tokyo Night, One Dark, and many more. Press F2, choose **Choose theme**, and type to filter. Arrow keys preview the highlighted theme throughout the editor; Enter or a visible row click applies and remembers it. Escape cancels the preview. Theme changes preserve source, selection, and undo history.
 
-`marklane --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
+`eymi --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
 
 Optional **Nerd Font icons** add small document and outline symbols. Configure your terminal to use a Nerd Font, then choose **Toggle Nerd Font icons** in F2, or launch with `--icons nerd`. The default is plain text; `--icons plain` selects it explicitly. The CLI flag overrides your saved icon preference for that launch. No font is bundled or downloaded.
 
-Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/marklane/settings.conf`, or `~/.config/marklane/settings.conf`. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
+Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/eymi/settings.conf`, or `~/.config/eymi/settings.conf`. If the `eymi` config directory is absent and an existing `marklane` directory is present, Eymi uses those preferences in place. No files are migrated or deleted. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
 
 ## Editing controls
 
@@ -74,7 +74,7 @@ Ctrl+F opens a compact Find row; Ctrl+R expands it with a replacement field whil
 
 Tab / Shift+Tab switches directly between Find and With, selecting the destination field's existing text. Enter in Find advances; Enter in With replaces the current result and advances. Alt+R replaces one result; Alt+A replaces all. Replace All is one document undo step. Press Escape before Ctrl+Z to undo document changes; within a search field, Ctrl+Z undoes field input.
 
-On supporting Unix terminals, Marklane requests disambiguated keyboard input so Shift+Enter can navigate backward. The protocol is restored on exit; Shift+F3 and the Previous button remain available. The [executable test runner](tools/tui-test/README.md) verifies the negotiated input bytes and captures the actual application without opening a native terminal window.
+On supporting Unix terminals, Eymi requests disambiguated keyboard input so Shift+Enter can navigate backward. The protocol is restored on exit; Shift+F3 and the Previous button remain available. The [executable test runner](tools/tui-test/README.md) verifies the negotiated input bytes and captures the actual application without opening a native terminal window.
 
 Ctrl+C/X/V uses the native clipboard locally, with a reported internal fallback on backend errors or SSH. The terminal's own paste shortcut also accepts external text. Empty paste preserves the selection. Automated clipboard tests use fake backends; the user reports the follow-up build works, without a per-platform compatibility record. Native Wayland and OSC 52 are not implemented.
 
@@ -86,7 +86,7 @@ Save As requires a new path that is not owned by another tab, and a changed disk
 
 Interactive sessions checkpoint dirty named and untitled documents about once a second. After an interrupted session, a startup notice offers **F2 → Recover documents**. Each chosen copy opens in a new, explicitly unsaved tab—even when its recovered text is empty. Save As chooses a new filename; recovery never overwrites a newer disk version. A recovered tab is durably checkpointed before its old recovery record is consumed.
 
-Private snapshots live in `$XDG_STATE_HOME/marklane/recovery`, or `~/.local/state/marklane/recovery`. Session locks isolate simultaneous editors. Save and confirmed discard remove the corresponding checkpoint; a canceled quit retains the remaining dirty tabs. Corrupt or unreadable records stay on disk with a diagnostic. Ordinary clean shutdown removes only that session's owned snapshots. Recovery is implemented for Unix and tested on macOS; unsupported platforms report that recovery is unavailable while editing remains usable.
+Private snapshots live in `$XDG_STATE_HOME/eymi/recovery`, or `~/.local/state/eymi/recovery`. The state directory independently falls back to an existing `marklane` directory when `eymi` is absent, preserving access to older snapshots without migration. Session locks isolate simultaneous editors. Save and confirmed discard remove the corresponding checkpoint; a canceled quit retains the remaining dirty tabs. Corrupt or unreadable records stay on disk with a diagnostic. Ordinary clean shutdown removes only that session's owned snapshots. Recovery is implemented for Unix and tested on macOS; unsupported platforms report that recovery is unavailable while editing remains usable.
 
 Recovery is a safety net with a roughly one-second checkpoint interval, so edits since the last successful checkpoint can be lost. Each snapshot accepts up to 16 MiB; discovery is bounded to 64 records / 64 MiB and 128 state entries, reporting skipped records. Original documents are never written by recovery. `--no-state` disables all preference and recovery storage.
 

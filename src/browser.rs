@@ -7,7 +7,7 @@ use crate::{
     workspace::clipped,
 };
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use marklane::Document;
+use eymi::Document;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -301,9 +301,7 @@ impl Browser {
                         } else {
                             head
                         };
-                        let _ = self
-                            .path
-                            .set_selection(marklane::Selection { anchor, head });
+                        let _ = self.path.set_selection(eymi::Selection { anchor, head });
                     }
                     KeyCode::End if self.path_focus => {
                         let head = self.path.text().len();
@@ -312,9 +310,7 @@ impl Browser {
                         } else {
                             head
                         };
-                        let _ = self
-                            .path
-                            .set_selection(marklane::Selection { anchor, head });
+                        let _ = self.path.set_selection(eymi::Selection { anchor, head });
                     }
                     KeyCode::Backspace if self.path_focus => {
                         self.path.backspace();
@@ -358,9 +354,7 @@ impl Browser {
                                 } else {
                                     head
                                 };
-                                let _ = self
-                                    .path
-                                    .set_selection(marklane::Selection { anchor, head });
+                                let _ = self.path.set_selection(eymi::Selection { anchor, head });
                             }
                         }
                         None => {}

@@ -1,5 +1,5 @@
 [package]
-name = "marklane"
+name = "eymi"
 version = "0.1.0"
 edition = "2024"
 description = "A source-preserving terminal Markdown editor"

@@ -1750,7 +1750,7 @@ mod tests {
     #[test]
     fn sidebar_defaults_are_responsive_without_stealing_editor_input() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new("# First\n\n## Second\n");
+        app.editor_mut().document = eymi::Document::new("# First\n\n## Second\n");
         for (width, height) in [(42, 16), (80, 24), (120, 36), (160, 45), (60, 7), (1, 1)] {
             draw(&mut app, width, height);
             assert_eq!(app.sidebar.area.width > 0, width >= 110 && height >= 8);
@@ -1788,7 +1788,7 @@ mod tests {
             "a paragraph\n\n".repeat(80)
         );
         let target = source.find("最後").unwrap();
-        app.editor_mut().document = marklane::Document::new(source.clone());
+        app.editor_mut().document = eymi::Document::new(source.clone());
         draw(&mut app, 120, 36);
         key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
@@ -1844,7 +1844,7 @@ mod tests {
     #[test]
     fn sidebar_explicit_toggle_and_resize_discard_stale_hits() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new("# One\n\n## Two\n");
+        app.editor_mut().document = eymi::Document::new("# One\n\n## Two\n");
         draw(&mut app, 80, 24);
         key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
         draw(&mut app, 80, 24);
@@ -1987,7 +1987,7 @@ mod tests {
     fn go_to_line_handles_all_newlines_clamps_eof_and_preserves_source() {
         let mut app = Workspace::open(None).unwrap();
         let source = "one\r\n界 two\rthree\nfour";
-        app.editor_mut().document = marklane::Document::new(source);
+        app.editor_mut().document = eymi::Document::new(source);
         for (line, offset) in [(1, 0), (2, 5), (3, 13), (4, 19), (999, source.len())] {
             ctrl(&mut app, 'g');
             app.handle_event(Event::Paste(line.to_string()));
@@ -2007,7 +2007,7 @@ mod tests {
     #[test]
     fn palette_theme_changes_both_chrome_and_body_without_editing_source() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new("# Theme\n");
+        app.editor_mut().document = eymi::Document::new("# Theme\n");
         let old_theme = crate::theme::current_theme();
         let before = draw(&mut app, 120, 36).backend().buffer()[(0, 0)].bg;
         palette_query(&mut app, "theme", 120, 36);
@@ -2063,7 +2063,7 @@ mod tests {
     #[test]
     fn modal_draws_over_sidebar_and_blocks_hidden_targets() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new("# One\n\n## Two\n");
+        app.editor_mut().document = eymi::Document::new("# One\n\n## Two\n");
         draw(&mut app, 120, 36);
         let target = app
             .sidebar
@@ -2074,7 +2074,7 @@ mod tests {
             .0;
         key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
         let text = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
-        assert!(text.contains("Marklane · Help"));
+        assert!(text.contains("Eymi · Help"));
         assert!(app.sidebar.hits.is_empty());
         assert!(app.tab_hits.is_empty());
         click_rect(&mut app, target);
@@ -2103,7 +2103,7 @@ mod tests {
     #[test]
     fn scrolling_sidebar_does_not_capture_keyboard_focus() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new("# Heading\n\n".repeat(30));
+        app.editor_mut().document = eymi::Document::new("# Heading\n\n".repeat(30));
         draw(&mut app, 120, 16);
         app.handle_event(Event::Mouse(MouseEvent {
             kind: MouseEventKind::ScrollDown,

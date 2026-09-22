@@ -1,7 +1,7 @@
 use std::{fs, process::Command};
 
 fn binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_marklane"))
+    Command::new(env!("CARGO_BIN_EXE_eymi"))
 }
 
 #[test]
@@ -120,8 +120,8 @@ fn icon_snapshots_use_explicit_flags_without_reading_or_changing_preferences() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config");
     let state = directory.path().join("state");
-    fs::create_dir_all(config.join("marklane")).unwrap();
-    let preferences = config.join("marklane/settings.conf");
+    fs::create_dir_all(config.join("eymi")).unwrap();
+    let preferences = config.join("eymi/settings.conf");
     fs::write(&preferences, "version=1\nicons=nerd\n").unwrap();
     for (arguments, nerd) in [
         (vec!["--snapshot"], false),
@@ -142,5 +142,41 @@ fn icon_snapshots_use_explicit_flags_without_reading_or_changing_preferences() {
         fs::read_to_string(preferences).unwrap(),
         "version=1\nicons=nerd\n"
     );
+    assert!(!state.exists());
+}
+
+#[test]
+fn eymi_command_branding_does_not_initialize_user_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    let state = directory.path().join("state");
+    for (argument, expected) in [
+        (
+            "--help",
+            "Eymi — a source-preserving Markdown editor".to_owned(),
+        ),
+        ("--version", format!("eymi {}", env!("CARGO_PKG_VERSION"))),
+        ("--snapshot", "eymi".to_owned()),
+    ] {
+        let output = binary()
+            .arg(argument)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&expected), "{argument}: {text}");
+        assert!(!text.to_lowercase().contains("marklane"));
+    }
+    let output = binary()
+        .arg("--unknown-option")
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("eymi:"));
+    assert!(!config.exists());
     assert!(!state.exists());
 }

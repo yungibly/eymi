@@ -4,7 +4,7 @@
 //! their Candidates are dropped. Snapshot generations are published and synced
 //! before older generations are retired, so failed updates retain the last good
 //! checkpoint. Drop deliberately preserves snapshots; use finish_clean explicitly.
-use marklane::Selection;
+use eymi::Selection;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -889,6 +889,30 @@ mod tests {
     }
 
     #[test]
+    fn pre_rename_recovery_record_remains_readable_and_byte_compatible() {
+        // Frozen MLREC001 record: tab 7, generation 2, untitled UTF-8 source.
+        // This fixture does not derive its header/checksum from the encoder.
+        const RECORD: &[u8] = &[
+            0x4d, 0x4c, 0x52, 0x45, 0x43, 0x30, 0x30, 0x31, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x0f, 0xda, 0x83, 0x51, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x06, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x4c, 0x65, 0x67, 0x61, 0x63, 0x79, 0x63, 0x61, 0x66, 0xc3, 0xa9, 0x0a,
+        ];
+        let expected = Snapshot {
+            source: "café\n".into(),
+            original_path: None,
+            selection: Selection { anchor: 0, head: 3 },
+            live: true,
+            markdown: true,
+            label: "Legacy".into(),
+        };
+        assert_eq!(decode(RECORD, 7, 2).unwrap(), expected);
+        assert_eq!(encode(7, 2, &expected).unwrap(), RECORD);
+    }
+
+    #[test]
     fn named_and_untitled_round_trip_exact_source_selection_and_metadata() {
         let directory = state();
         let original = directory.path().join("original.md");
@@ -1218,7 +1242,7 @@ mod tests {
 
     #[test]
     fn crash_writer_subprocess() {
-        let Some(root) = std::env::var_os("MARKLANE_RECOVERY_TEST_ROOT") else {
+        let Some(root) = std::env::var_os("EYMI_RECOVERY_TEST_ROOT") else {
             return;
         };
         let mut store = Store::open(root).unwrap();
@@ -1226,7 +1250,7 @@ mod tests {
             .checkpoint(8, &snapshot("survives an abrupt exit"))
             .unwrap();
         fs::write(
-            std::env::var_os("MARKLANE_RECOVERY_TEST_READY").unwrap(),
+            std::env::var_os("EYMI_RECOVERY_TEST_READY").unwrap(),
             b"ready",
         )
         .unwrap();
@@ -1258,8 +1282,8 @@ mod tests {
                     "recovery::tests::crash_writer_subprocess",
                     "--nocapture",
                 ])
-                .env("MARKLANE_RECOVERY_TEST_ROOT", &root)
-                .env("MARKLANE_RECOVERY_TEST_READY", &ready)
+                .env("EYMI_RECOVERY_TEST_ROOT", &root)
+                .env("EYMI_RECOVERY_TEST_READY", &ready)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()

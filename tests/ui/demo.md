@@ -1,4 +1,4 @@
-# Marklane
+# Eymi
 
 A calm place for **Markdown**, _notes_, and [plans](https://example.com).
 

@@ -22,7 +22,7 @@ pub(super) fn headings(source: &str) -> Vec<Heading> {
     let mut result = Vec::new();
     let mut heading: Option<Heading> = None;
     for (event, range) in
-        Parser::new_ext(&source[bom..], marklane::markdown::options()).into_offset_iter()
+        Parser::new_ext(&source[bom..], eymi::markdown::options()).into_offset_iter()
     {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {

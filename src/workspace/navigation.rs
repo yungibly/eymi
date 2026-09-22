@@ -164,7 +164,7 @@ mod tests {
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
-    use marklane::Selection;
+    use eymi::Selection;
 
     fn key(app: &mut Workspace, code: KeyCode) {
         app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -248,7 +248,7 @@ mod tests {
     fn heading_picker_finds_semantic_unicode_headings_and_preserves_cancelled_selection() {
         let source = "\u{feff}# Start\r\n\r\n```\r\n# Hidden\r\n```\r\n\r\n## Résumé\r\n\r\nRésumé\r\n------\r\n";
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new(source);
+        app.editor_mut().document = eymi::Document::new(source);
         let selection = Selection {
             anchor: source.len(),
             head: 3,
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn navigation_pickers_reject_invisible_stale_and_empty_targets() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = marklane::Document::new("# One\n\n## Two\n");
+        app.editor_mut().document = eymi::Document::new("# One\n\n## Two\n");
         draw(&mut app, 80, 24);
         key(&mut app, KeyCode::F(11));
         app.handle_event(Event::Paste("Two".into()));
@@ -312,7 +312,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.editor().document.selection().head, caret);
         assert!(draw(&mut app, 80, 24).contains("Document changed"));
-        app.editor_mut().document = marklane::Document::new("No sections here.");
+        app.editor_mut().document = eymi::Document::new("No sections here.");
         key(&mut app, KeyCode::F(11));
         assert!(draw(&mut app, 80, 24).contains("No headings in this document"));
         key(&mut app, KeyCode::Enter);

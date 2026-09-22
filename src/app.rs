@@ -10,7 +10,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use marklane::{Document, InlineStyle, Selection};
+use eymi::{Document, InlineStyle, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -1406,7 +1406,7 @@ impl App {
             // editable text or part of the source hit map.
             if self.live && self.viewport.x.saturating_sub(area.x) >= 4 {
                 for block in &self.parsed.snapshot.blocks {
-                    if let marklane::BlockKind::Heading(level) = block.kind
+                    if let eymi::BlockKind::Heading(level) = block.kind
                         && self.projection.cursor(block.range.start).0 == visual_row
                     {
                         frame.render_widget(
@@ -1426,7 +1426,7 @@ impl App {
             // the row-wide inset distinguishes it from surrounding prose.
             if self.live
                 && self.parsed.snapshot.blocks.iter().any(|block| {
-                    block.kind == marklane::BlockKind::Code
+                    block.kind == eymi::BlockKind::Code
                         && block.range.start <= row.start
                         && row.start < block.range.end
                 })
@@ -1859,7 +1859,7 @@ impl App {
         let reload_fits = frame.area().width >= 44 && frame.area().height >= 9;
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
-            Overlay::Help => (" Marklane · Help · ↑↓ Scroll ", HELP_LINES[self.help_scroll..].join("\n")),
+            Overlay::Help => (" Eymi · Help · ↑↓ Scroll ", HELP_LINES[self.help_scroll..].join("\n")),
             Overlay::Reload if reload_fits => (" Reload from disk ", "Replace local edits with disk text?\nUndo can restore your local edits.\n\nY: Reload  N/Esc: Keep editing".into()),
             Overlay::Reload => (" Reload ", "Resize to confirm reload.\nEsc: Keep editing".into()),
             Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
@@ -2256,9 +2256,7 @@ mod tests {
         assert!(footer.contains("Ln 2, Col 3"));
         assert!(footer.contains("100%"));
         assert!(footer.contains("UTF-8"));
-        for redundant in [
-            "Live", "Source", "Untitled", "Marklane", "F1", "^S", "Commands",
-        ] {
+        for redundant in ["Live", "Source", "Untitled", "Eymi", "F1", "^S", "Commands"] {
             assert!(!footer.contains(redundant), "{footer}");
         }
         key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
@@ -2638,7 +2636,7 @@ mod tests {
             if dirty {
                 app.document.insert("local ");
             }
-            app.document.set_history_limits(marklane::HistoryLimits {
+            app.document.set_history_limits(eymi::HistoryLimits {
                 max_entries: 0,
                 max_bytes: 0,
             });

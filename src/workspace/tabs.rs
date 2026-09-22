@@ -38,14 +38,14 @@ pub(super) fn draw(
     let brand = if rail_width > 0 {
         rail_width
     } else if area.width >= 72 {
-        12
+        8
     } else {
         0
     };
     if brand > 0 {
         let brand_rect = Rect::new(area.x, area.y, brand, 1);
         frame.render_widget(
-            Paragraph::new("  marklane").style(colors.sidebar.style().add_modifier(Modifier::BOLD)),
+            Paragraph::new("  eymi").style(colors.sidebar.style().add_modifier(Modifier::BOLD)),
             brand_rect,
         );
         if rail_width > 0 {
@@ -250,7 +250,7 @@ mod tests {
                     let brand = if rail > 0 {
                         rail
                     } else if width >= 72 {
-                        12
+                        8
                     } else {
                         0
                     };

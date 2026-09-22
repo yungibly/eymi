@@ -58,9 +58,9 @@ Use a copy of the fixture so experiments do not modify the repository's example:
 
 ```sh
 cargo build --locked
-marklane_demo_dir="$(mktemp -d)"
-cp tests/ui/demo.md "$marklane_demo_dir/demo.md"
-./target/debug/marklane "$marklane_demo_dir/demo.md"
+eymi_demo_dir="$(mktemp -d)"
+cp tests/ui/demo.md "$eymi_demo_dir/demo.md"
+./target/debug/eymi "$eymi_demo_dir/demo.md"
 ```
 
 Record the terminal name/version and whether a multiplexer or SSH is involved. A single initial local terminal is enough to start; additional combinations remain unverified until tried.
@@ -72,7 +72,7 @@ Record the terminal name/version and whether a multiplexer or SSH is involved. A
 5. **Wrapping and Unicode.** Resize to a narrow pane. Check Home/End and Up/Down on a wrapped paragraph, and place the caret around `界`, combining accents, and emoji. The caret should remain visible and match the source position being edited.
 6. **Save and exit.** Ctrl+S saves the scratch copy. Ctrl+Q exits; with unsaved changes, Y saves and exits, N discards and exits, and Escape returns to editing. After exit, the shell should echo input normally and show its cursor, with mouse capture disabled.
 
-For an untitled document, run `./target/debug/marklane`. Ctrl+S opens Save As; F4 also opens Save As. This prototype requires a new filename for Save As and protects existing targets from overwrite.
+For an untitled document, run `./target/debug/eymi`. Ctrl+S opens Save As; F4 also opens Save As. This prototype requires a new filename for Save As and protects existing targets from overwrite.
 
 Alt+Enter inserts a literal newline in Markdown. Ctrl+T toggles the task containing the caret. F1 shows current controls. Native terminal bindings can intercept a shortcut; report the terminal and the exact key that failed rather than assuming the editor received it.
 
@@ -83,7 +83,7 @@ Use the scratch file above after rebuilding. The initial manual pass need not be
 1. Click the spaces immediately beside a rendered checkbox, then its label. Repeat Enter after exiting a bullet, number, or task list; type a plain paragraph afterward.
 2. Ctrl+F opens Find. Search for text in a link destination: the selected result should reveal its Markdown source. Enter/F3 advances, Shift+Enter/Shift+F3 goes backward, and Escape returns to the document. Matching is literal and case-sensitive.
 3. Ctrl+R opens Find/Replace. Tab switches between Find and With and selects that field's text. Enter in Find navigates; Enter in With replaces one result and advances. Click Replace All or press Alt+A to replace all. Press Escape then Ctrl+Z: one undo restores the original document. Ctrl+Z while a text field is focused undoes that field's input.
-4. In a local session, copy a harmless selected sentence with Ctrl+C and paste into another app. Copy a different harmless sentence there and use Ctrl+V in Marklane. Check cut/paste/undo as well. Empty or nontext clipboard content must leave selected document text intact. A native backend error switches the session to an explicitly reported internal clipboard; terminal paste still works. Restart to retry native access. SSH sessions use the internal clipboard and terminal paste.
+4. In a local session, copy a harmless selected sentence with Ctrl+C and paste into another app. Copy a different harmless sentence there and use Ctrl+V in Eymi. Check cut/paste/undo as well. Empty or nontext clipboard content must leave selected document text intact. A native backend error switches the session to an explicitly reported internal clipboard; terminal paste still works. Restart to retry native access. SSH sessions use the internal clipboard and terminal paste.
 
 Native clipboard delivery is a manual check. Automated fake-backend tests exercise failures, timeouts, source fidelity, and no-op empty paste without accessing the user's actual clipboard. Native Wayland clipboard support and OSC 52 are deferred; the selected Linux backend uses X11, where availability also depends on the desktop session.
 

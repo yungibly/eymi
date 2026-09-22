@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn unicode_and_wrapped_pieces_use_source_spans_without_splitting_glyphs() {
-        let doc = marklane::Document::new("e\u{301}界 👩‍💻 e\u{301}界");
+        let doc = eymi::Document::new("e\u{301}界 👩‍💻 e\u{301}界");
         let matches = doc.find_matches("e\u{301}界");
         assert_eq!(matches.len(), 2);
         let base = Style::default();

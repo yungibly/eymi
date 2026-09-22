@@ -18,7 +18,7 @@ use std::io::{self, IsTerminal};
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("marklane: {error}");
+        eprintln!("eymi: {error}");
         std::process::exit(1);
     }
 }
@@ -30,7 +30,7 @@ fn run() -> io::Result<()> {
             return Ok(());
         }
         cli::Action::Version => {
-            println!("marklane {}", env!("CARGO_PKG_VERSION"));
+            println!("eymi {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         cli::Action::ListThemes => {

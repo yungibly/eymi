@@ -35,10 +35,35 @@ pub fn directories() -> io::Result<(PathBuf, PathBuf)> {
                 io::Error::other("No home directory; preferences and recovery are unavailable")
             })
     }
-    Ok((
-        base("XDG_CONFIG_HOME", ".config")?.join("marklane"),
-        base("XDG_STATE_HOME", ".local/state")?.join("marklane"),
-    ))
+    directories_under(
+        &base("XDG_CONFIG_HOME", ".config")?,
+        &base("XDG_STATE_HOME", ".local/state")?,
+    )
+}
+
+fn directories_under(config: &Path, state: &Path) -> io::Result<(PathBuf, PathBuf)> {
+    Ok((app_directory(config)?, app_directory(state)?))
+}
+
+/// Select existing roots without creating, migrating, or deleting anything.
+/// A new-name root wins even when empty. Only a genuinely absent path permits
+/// fallback; errors and non-directory entries must not silently split user data.
+fn app_directory(base: &Path) -> io::Result<PathBuf> {
+    for name in ["eymi", "marklane"] {
+        let path = base.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_dir() => return Ok(path),
+            Ok(_) => {
+                return Err(io::Error::other(format!(
+                    "Preferences and recovery path must be a real directory: {}",
+                    path.display()
+                )));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(base.join("eymi"))
 }
 
 fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -235,6 +260,127 @@ fn writable_permissions(path: &Path) -> io::Result<Option<fs::Permissions>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn absent_roots_select_eymi_without_creating_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config");
+        let state = directory.path().join("state");
+        assert_eq!(
+            directories_under(&config, &state).unwrap(),
+            (config.join("eymi"), state.join("eymi"))
+        );
+        assert!(!config.exists());
+        assert!(!state.exists());
+    }
+
+    #[test]
+    fn legacy_roots_are_selected_independently_without_migration() {
+        for config_new in [false, true] {
+            for state_new in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let config = directory.path().join("config");
+                let state = directory.path().join("state");
+                fs::create_dir_all(config.join("marklane")).unwrap();
+                fs::create_dir_all(state.join("marklane/recovery")).unwrap();
+                let preferences = config.join("marklane/settings.conf");
+                let snapshot = state.join("marklane/recovery/retained.snapshot");
+                fs::write(&preferences, "version=1\ntheme=light\nicons=nerd\n").unwrap();
+                fs::write(&snapshot, b"legacy snapshot remains untouched").unwrap();
+                if config_new {
+                    fs::create_dir(config.join("eymi")).unwrap();
+                }
+                if state_new {
+                    fs::create_dir(state.join("eymi")).unwrap();
+                }
+                let (chosen_config, chosen_state) = directories_under(&config, &state).unwrap();
+                assert_eq!(
+                    chosen_config,
+                    config.join(if config_new { "eymi" } else { "marklane" })
+                );
+                assert_eq!(
+                    chosen_state,
+                    state.join(if state_new { "eymi" } else { "marklane" })
+                );
+                let settings = Settings::load(&chosen_config).unwrap();
+                assert_eq!(
+                    settings.theme(),
+                    if config_new { None } else { Some(Theme::Light) }
+                );
+                assert_eq!(
+                    settings.icons(),
+                    if config_new {
+                        None
+                    } else {
+                        Some(IconSet::Nerd)
+                    }
+                );
+                assert_eq!(
+                    fs::read_to_string(&preferences).unwrap(),
+                    "version=1\ntheme=light\nicons=nerd\n"
+                );
+                assert_eq!(
+                    fs::read(&snapshot).unwrap(),
+                    b"legacy snapshot remains untouched"
+                );
+                assert_eq!(config.join("eymi").exists(), config_new);
+                assert_eq!(state.join("eymi").exists(), state_new);
+                assert!(!config.join("eymi/settings.conf").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn conflicting_root_files_and_lookup_errors_do_not_trigger_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path();
+        fs::create_dir(base.join("marklane")).unwrap();
+        fs::write(base.join("eymi"), "keep file").unwrap();
+        assert!(app_directory(base).is_err());
+        assert_eq!(fs::read_to_string(base.join("eymi")).unwrap(), "keep file");
+        assert!(app_directory(&base.join("eymi/child")).is_err());
+        fs::remove_file(base.join("eymi")).unwrap();
+        fs::remove_dir(base.join("marklane")).unwrap();
+        fs::write(base.join("marklane"), "keep legacy file").unwrap();
+        assert!(app_directory(base).is_err());
+        assert!(!base.join("eymi").exists());
+        assert_eq!(
+            fs::read_to_string(base.join("marklane")).unwrap(),
+            "keep legacy file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_symlinks_are_not_followed_or_treated_as_absent() {
+        use std::os::unix::fs::symlink;
+        for name in ["eymi", "marklane"] {
+            for dangling in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let base = directory.path().join("base");
+                let target = directory.path().join("target");
+                fs::create_dir(&base).unwrap();
+                if !dangling {
+                    fs::create_dir(&target).unwrap();
+                }
+                symlink(&target, base.join(name)).unwrap();
+                if name == "eymi" {
+                    fs::create_dir(base.join("marklane")).unwrap();
+                }
+                assert!(app_directory(&base).is_err());
+                assert!(
+                    fs::symlink_metadata(base.join(name))
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(target.exists(), !dangling);
+                if !dangling {
+                    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+                }
+            }
+        }
+    }
+
     #[test]
     fn explicit_choices_persist_without_touching_unknown_preferences() {
         let dir = tempfile::tempdir().unwrap();

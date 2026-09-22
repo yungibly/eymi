@@ -1,7 +1,7 @@
 //! A small command picker. Query edits always stay in its own document.
 use super::{chrome_active, chrome_muted, chrome_style, clipped};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use marklane::Document;
+use eymi::Document;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -95,7 +95,7 @@ impl Command {
             Self::Documents => "Switch document…",
             Self::Headings => "Go to heading…",
             Self::Help => "Help / keyboard shortcuts",
-            Self::Quit => "Quit Marklane",
+            Self::Quit => "Quit Eymi",
             Self::Undo => "Undo edit",
             Self::Redo => "Redo edit",
             Self::Bold => "Format bold",

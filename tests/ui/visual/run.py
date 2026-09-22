@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Replay Marklane's bounded real-executable visual/protocol scenarios.
+"""Replay Eymi's bounded real-executable visual/protocol scenarios.
 
-python3 tests/ui/visual/run.py --tool /path/to/tui-test --binary /path/to/marklane \
+python3 tests/ui/visual/run.py --tool /path/to/tui-test --binary /path/to/eymi \
     --output target/visual-baseline --keyboard baseline
 
 Use --keyboard enhanced for the terminal fix; --suite captures lets the UI
@@ -372,7 +372,7 @@ def chrome(session):
     def idle(label, expect_outline=None, first_line=False):
         state, cells = session.capture(label)
         filenames = list(find_cells(cells, name))
-        wordmarks = list(find_cells(cells, "marklane", casefold=True))
+        wordmarks = list(find_cells(cells, "eymi", casefold=True))
         session.check(len(filenames) == 1, "Idle filename appears exactly once: " + label,
                       filename=name, occurrences=len(filenames))
         header_y = filenames[0][0]["y"]
