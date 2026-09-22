@@ -6,6 +6,9 @@ use std::{cell::Cell, sync::OnceLock};
 mod data;
 use data::BUILTINS;
 
+mod chrome;
+pub use chrome::ChromePalette;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
     #[default]
@@ -30,6 +33,20 @@ pub fn set_theme(theme: Theme) {
 
 pub fn current_theme() -> Theme {
     THEME.get()
+}
+
+/// A readable text/background pair; consumers need not infer contrast by
+/// reversing or reusing an unrelated accent color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColorPair {
+    pub foreground: Color,
+    pub background: Color,
+}
+
+impl ColorPair {
+    pub fn style(self) -> Style {
+        Style::default().fg(self.foreground).bg(self.background)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -135,6 +152,11 @@ impl Theme {
             },
         };
         contrast(Color::Rgb(255, 255, 255), background) >= contrast(Color::Rgb(0, 0, 0), background)
+    }
+
+    /// Explicit contrast-safe colors for tabs, sidebar, and status segments.
+    pub fn chrome_palette(self) -> ChromePalette {
+        chrome::for_theme(self)
     }
 
     pub fn palette(self) -> Palette {
@@ -253,10 +275,14 @@ fn ink(background: Color) -> Color {
 /// Preserve a source color when readable, otherwise change it only as far as
 /// needed toward the common black/white ink for these background surfaces.
 fn readable(color: Color, backgrounds: &[Color], ink: Color) -> Color {
+    readable_at(color, backgrounds, ink, 4.5)
+}
+
+fn readable_at(color: Color, backgrounds: &[Color], ink: Color, minimum: f64) -> Color {
     let passes = |candidate| {
         backgrounds
             .iter()
-            .all(|background| contrast(candidate, *background) >= 4.5)
+            .all(|background| contrast(candidate, *background) >= minimum)
     };
     if passes(color) {
         return color;
@@ -335,6 +361,10 @@ fn derive_palette(theme: &BuiltinTheme) -> Palette {
             ink(search_active),
         ),
     }
+}
+
+pub fn chrome_palette() -> ChromePalette {
+    current_theme().chrome_palette()
 }
 
 pub fn palette() -> Palette {
