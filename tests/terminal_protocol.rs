@@ -307,3 +307,28 @@ fn ordinary_typing_enter_and_bracketed_paste_preserve_source() {
     session.save_and_expect("typed\nline one\n- [ ] task\t終\n");
     session.finish();
 }
+
+#[test]
+fn word_selection_formatting_indentation_and_typing_undo_reach_the_core() {
+    let source = "alpha beta\n";
+    let mut session = Session::start(source);
+    // Modified arrow transport selects one source word; CSI-u delivers the
+    // formatting and indentation commands without legacy control aliases.
+    session.send(b"\x1b[1;6C\x1b[98;5u");
+    session.save_and_expect("**alpha** beta\n");
+    session.send(b"\x1b[122;5u");
+    session.save_and_expect(source);
+    session.send(b"\x1b[93;5u");
+    session.save_and_expect("    alpha beta\n");
+    session.send(b"\x1b[122;5u");
+    session.save_and_expect(source);
+    // Literal terminal text is a run of keyboard events, not bracketed paste.
+    session.send(b"\x1b[1;5Fdraft\x1b[122;5u");
+    session.save_and_expect(source);
+    // Alt+I is the portable italic shortcut; plain Tab remains indentation.
+    session.send(b"\x1b[1;5H\x1b[1;6C\x1b[105;3u");
+    session.save_and_expect("*alpha* beta\n");
+    session.send(b"\x1b[122;5u");
+    session.save_and_expect(source);
+    session.finish();
+}

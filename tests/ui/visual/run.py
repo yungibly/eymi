@@ -204,13 +204,105 @@ def unicode_and_edits(session):
     session.capture("04-wheel-at-body")
 
 
+def workspace(session):
+    """Exercise the new workspace and editing controls through the real PTY."""
+    source = session.original_source
+    state, cells = session.capture("01-writing-160x45")
+    session.check("DOCUMENTS" in state["text"] and "OUTLINE" in state["text"],
+                  "Wide workspace exposes documents and outline")
+    heading = "Later, with confidence"
+    targets = [chunk for chunk in find_cells(cells, heading) if chunk[0]["x"] < 27]
+    session.check(len(targets) == 1, "Outline has one visible final-heading target")
+    target = targets[0][1]
+    session.call("mouse", "click", target["x"], target["y"])
+    heading_line = source.splitlines().index("## " + heading) + 1
+    session.check(f"Ln {heading_line}, Col 1" in session.state()["text"],
+                  "Outline pointer jumps to the exact source heading")
+    session.capture("02-outline-navigation")
+    session.key("F9")
+    session.key("End")
+    session.key("Enter")
+    session.check(f"Ln {heading_line}, Col 1" in session.state()["text"],
+                  "Sidebar is also keyboard accessible")
+
+    session.key("Ctrl+g")
+    session.call("type", "3")
+    session.capture("03-go-to-line")
+    session.key("Enter")
+    session.check("Ln 3, Col 1" in session.state()["text"], "Go to line uses source lines")
+
+    def command(query):
+        session.key("F2")
+        session.call("type", query)
+        session.settle()
+        session.key("Enter")
+
+    def save_expected(expected, message):
+        session.key("Ctrl+s")
+        session.check(session.fixture.read_text() == expected, message)
+
+    session.key("F2")
+    session.call("type", "theme")
+    session.capture("04-filtered-command-palette")
+    session.key("Escape")
+    background = next(c["bg"] for c in session.cells() if (c["x"], c["y"]) == (159, 3))
+    command("theme")
+    changed = next(c["bg"] for c in session.cells() if (c["x"], c["y"]) == (159, 3))
+    session.check(changed != background, "Theme command changes actual document cell colors")
+    session.capture("05-opposite-theme")
+    command("theme")
+
+    session.key("Ctrl+Shift+Right")
+    command("Format bold")
+    save_expected(source.replace("Write", "**Write**", 1), "Palette formatting edits selected source")
+    session.capture("06-formatting-selection")
+    session.key("Ctrl+z")
+    save_expected(source, "One undo restores formatting and original source")
+    session.key("Ctrl+]")
+    save_expected(source.replace("Write", "    Write", 1), "Indent command edits the selected source line")
+    session.key("Ctrl+z")
+    save_expected(source, "Indent is one undo step")
+
+    session.key("Ctrl+End")
+    session.call("type", "draft")
+    session.key("Ctrl+z")
+    save_expected(source, "Contiguous keyboard typing undoes as a group")
+    session.paste("literal\n- [ ] paste\n")
+    save_expected(source + "literal\n- [ ] paste\n", "Bracketed paste stays literal")
+    session.key("Ctrl+z")
+    save_expected(source, "Pasted text remains one undo transaction")
+
+    command("New document")
+    session.check("Untitled 2.md" in session.state()["text"], "Palette creates an independent document tab")
+    session.key("F7")
+    session.key("Ctrl+Home")
+    session.capture("07-document-tabs")
+    for width, height in [(120, 36), (80, 24), (42, 16), (20, 10)]:
+        session.call("resize", width, height)
+        session.capture(f"08-workspace-{width}x{height}")
+        session.check(("OUTLINE" in session.state()["text"]) == (width >= 110),
+                      f"Sidebar adapts to {width}x{height}")
+
+    session.key("F2")
+    session.call("resize", 20, 4)
+    session.key("Enter")
+    session.capture("09-tiny-palette")
+    session.key("Escape")
+    session.call("resize", 160, 45)
+    save_expected(source, "Tiny palette and navigation never modify the document")
+    session.key("Ctrl+Home")
+    session.capture("10-finished-writing-160x45")
+    session.check(not any(c["png_error"] for c in session.captures),
+                  "Workspace captures all export as native PNGs")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tool", required=True)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="baseline")
-    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode"], default="all")
+    parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="enhanced")
+    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
     parser.add_argument("--theme", choices=["dark", "light"],
                         help="Editor theme; omitted for compatibility with older binaries")
@@ -218,22 +310,26 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(__file__, args.output / "scenario.py")
     shutil.copyfile(HELPER, args.output / "session.py")
-    for fixture in ["acceptance.md", "screenshots.md"]:
+    for fixture in ["acceptance.md", "screenshots.md", "writing.md"]:
         shutil.copyfile(Path(__file__).with_name(fixture), args.output / fixture)
     write_json(args.output / "invocation.json", vars(args) | {"output": str(args.output.resolve())})
-    suites = ["captures", "protocol", "unicode"] if args.suite == "all" else [args.suite]
+    suites = ["captures", "protocol", "unicode", "workspace"] if args.suite == "all" else [args.suite]
     for suite in suites:
-        fixture = "acceptance.md" if suite == "unicode" else "screenshots.md"
+        fixture = {"unicode": "acceptance.md", "workspace": "writing.md"}.get(suite, "screenshots.md")
         app_args = ["--theme", args.theme] if args.theme else []
         session = Session(args.tool, args.binary, args.output / suite,
-                          Path(__file__).with_name(fixture), args.palette, app_args=app_args)
+                          Path(__file__).with_name(fixture), args.palette,
+                          size=(160, 45) if suite == "workspace" else (80, 24), app_args=app_args)
         try:
             session.start()
-            session.call("expect", "text", "Terminal acceptance", "--timeout", 3000)
+            title = "A calmer place to write" if suite == "workspace" else "Terminal acceptance"
+            session.call("expect", "text", title, "--timeout", 3000)
             if suite == "captures":
                 captures(session)
             elif suite == "protocol":
                 protocol(session, args.keyboard)
+            elif suite == "workspace":
+                workspace(session)
             else:
                 unicode_and_edits(session)
             session.key("Escape")

@@ -10,7 +10,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use marklane::{Document, Selection};
+use marklane::{Document, InlineStyle, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -49,6 +49,33 @@ fn chrome_focus() -> Style {
     chrome_style().fg(palette().accent)
 }
 
+const HELP_LINES: &[&str] = &[
+    "Type normally. Shift+arrows or drag selects source.",
+    "Ctrl/Alt+Left/Right: words; add Shift to select",
+    "Ctrl/Alt+Backspace/Delete: delete a word",
+    "Home/End: visual row · Ctrl+Home/End: document",
+    "Ctrl+B: bold · Alt+I: italic · Alt+`: inline code",
+    "Tab with selection: indent · Shift+Tab: outdent",
+    "Ctrl+] / Ctrl+[: indent / outdent source lines",
+    "Ctrl+Z: undo · Ctrl+Y / Ctrl+Shift+Z: redo",
+    "Typing groups by word; paste is one undo step.",
+    "Enter continues lists · Alt+Enter: literal newline",
+    "Ctrl+T: toggle task · Ctrl+E / F6: live/source",
+    "Ctrl+A: select all · Ctrl+C/X/V: copy/cut/paste",
+    "Ctrl+S: save · F4 / Ctrl+Shift+S: Save As",
+    "Ctrl+N: new · Ctrl+O: open · Ctrl+W: close tab",
+    "F7/F8 or Ctrl+PageUp/PageDown: switch tabs",
+    "F2 / Ctrl+P: commands · Ctrl+G: go to source line",
+    "F9: focus/hide sidebar · arrows/Enter: navigate",
+    "Ctrl+F: find · Ctrl+R: replace · F3/Shift+F3: next/prev",
+    "Search: Tab switches fields; With Enter replaces one.",
+    "Alt+R/A: replace one/all · Escape closes search",
+    "Ctrl+Q: quit, with confirmation for unsaved changes",
+    "Theme changes are available in the command palette.",
+    "UTF-8 files up to 8 MiB. Disk conflicts require Save As.",
+    "Arrows/PageUp/PageDown scroll help. Esc closes help.",
+];
+
 #[derive(Debug, PartialEq, Eq)]
 enum Overlay {
     None,
@@ -83,6 +110,7 @@ pub struct App {
     search_geometry: SearchGeometry,
     field_drag: Option<FieldDrag>,
     overlay: Overlay,
+    help_scroll: usize,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -158,6 +186,7 @@ impl App {
     }
 
     pub(crate) fn deactivate(&mut self) {
+        self.document.break_undo_group();
         self.overlay = Overlay::None;
         self.search = Search::default();
         self.search_geometry = SearchGeometry::default();
@@ -219,6 +248,7 @@ impl App {
             search_geometry: SearchGeometry::default(),
             field_drag: None,
             overlay: Overlay::None,
+            help_scroll: 0,
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -231,6 +261,16 @@ impl App {
     }
 
     pub fn handle_event(&mut self, event: Event) {
+        // Only direct text entry may continue a typing group. UI commands,
+        // failed saves, view changes and pointer gestures must end it too.
+        let typing = self.overlay == Overlay::None
+            && matches!(&event, Event::Key(key)
+                if key.kind != KeyEventKind::Release
+                    && matches!(key.code, KeyCode::Char(_))
+                    && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
+        if !typing && !matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Release) {
+            self.document.break_undo_group();
+        }
         if !self.message_is_error
             && (matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
                 || matches!(&event, Event::Paste(text) if !text.is_empty())
@@ -327,6 +367,9 @@ impl App {
                     }
                 }
                 KeyCode::Char('e') => self.toggle_view(),
+                KeyCode::Char('z' | 'Z') if shift => {
+                    self.document.redo();
+                }
                 KeyCode::Char('z') => {
                     self.document.undo();
                 }
@@ -351,6 +394,32 @@ impl App {
                 KeyCode::Char('t') if self.markdown => {
                     self.document.toggle_task_at_caret();
                 }
+                KeyCode::Left => {
+                    self.document.move_word_left(shift);
+                    self.affinity = Affinity::Downstream;
+                }
+                KeyCode::Right => {
+                    self.document.move_word_right(shift);
+                    self.affinity = Affinity::Downstream;
+                }
+                KeyCode::Backspace => {
+                    self.document.delete_word_backward();
+                }
+                KeyCode::Delete => {
+                    self.document.delete_word_forward();
+                }
+                KeyCode::Char('b' | 'B') if self.markdown => {
+                    self.document.toggle_inline(InlineStyle::Bold);
+                }
+                KeyCode::Char('i' | 'I') if self.markdown => {
+                    self.document.toggle_inline(InlineStyle::Italic);
+                }
+                KeyCode::Char(']') => {
+                    self.document.indent_lines();
+                }
+                KeyCode::Char('[') => {
+                    self.document.outdent_lines();
+                }
                 KeyCode::Home => self.move_to(0, shift),
                 KeyCode::End => self.move_to(self.document.text().len(), shift),
                 _ => {}
@@ -358,8 +427,32 @@ impl App {
             self.preferred_column = None;
             return;
         }
+        if alt {
+            match key.code {
+                KeyCode::Left => self.document.move_word_left(shift),
+                KeyCode::Right => self.document.move_word_right(shift),
+                KeyCode::Backspace => {
+                    self.document.delete_word_backward();
+                }
+                KeyCode::Delete => {
+                    self.document.delete_word_forward();
+                }
+                KeyCode::Char('i' | 'I') if self.markdown => {
+                    self.document.toggle_inline(InlineStyle::Italic);
+                }
+                KeyCode::Char('`') if self.markdown => {
+                    self.document.toggle_inline(InlineStyle::Code);
+                }
+                _ => {}
+            }
+            if !matches!(key.code, KeyCode::Enter) {
+                self.affinity = Affinity::Downstream;
+                self.preferred_column = None;
+                return;
+            }
+        }
         match key.code {
-            KeyCode::F(1) => self.overlay = Overlay::Help,
+            KeyCode::F(1) => self.open_help(),
             KeyCode::F(3) => {
                 if self.search.query.text().is_empty() {
                     self.open_search(false);
@@ -422,11 +515,21 @@ impl App {
                 self.preferred_column = None;
             }
             KeyCode::Tab => {
-                self.document.insert("\t");
+                if shift {
+                    self.document.outdent_lines();
+                } else if self.document.selection().is_empty() {
+                    self.document.insert("\t");
+                } else {
+                    self.document.indent_lines();
+                }
+                self.preferred_column = None;
+            }
+            KeyCode::BackTab => {
+                self.document.outdent_lines();
                 self.preferred_column = None;
             }
             KeyCode::Char(c) if !alt => {
-                self.document.insert(&c.to_string());
+                self.document.type_text(&c.to_string());
                 self.preferred_column = None;
             }
             _ => {}
@@ -436,6 +539,11 @@ impl App {
     fn finish_gesture(&mut self) {
         self.dragging = false;
         self.follow_cursor = true;
+    }
+
+    fn open_help(&mut self) {
+        self.help_scroll = 0;
+        self.overlay = Overlay::Help;
     }
 
     fn move_to(&mut self, offset: usize, extend: bool) {
@@ -691,7 +799,7 @@ impl App {
             return;
         }
         if key.code == KeyCode::F(1) {
-            self.overlay = Overlay::Help;
+            self.open_help();
             return;
         }
         if key.code == KeyCode::F(4) {
@@ -932,9 +1040,17 @@ impl App {
         }
         match &mut self.overlay {
             Overlay::Help => {
-                if matches!(key.code, KeyCode::F(1) | KeyCode::Enter) {
-                    self.overlay = Overlay::None;
+                match key.code {
+                    KeyCode::F(1) | KeyCode::Enter => self.overlay = Overlay::None,
+                    KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
+                    KeyCode::Down => self.help_scroll += 1,
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(8),
+                    KeyCode::PageDown => self.help_scroll += 8,
+                    KeyCode::Home => self.help_scroll = 0,
+                    KeyCode::End => self.help_scroll = HELP_LINES.len() - 1,
+                    _ => {}
                 }
+                self.help_scroll = self.help_scroll.min(HELP_LINES.len() - 1);
             }
             Overlay::Quit => match key.code {
                 KeyCode::Char('y' | 'Y') => self.save(true),
@@ -1422,7 +1538,7 @@ impl App {
             }
             Overlay::Search { replace: true } => "Enter Next · Tab With · Esc Close",
             Overlay::Search { replace: false } => "Enter Next · ^R Replace · Esc Close",
-            Overlay::Help => "Esc Close",
+            Overlay::Help => "↑↓ Scroll · Esc Close",
             Overlay::SaveAs { .. } => "Enter Save · Esc Cancel",
             Overlay::Quit => "Y Save · N Discard · Esc Cancel",
             Overlay::None if area.width < 60 => "F1 Help",
@@ -1487,7 +1603,7 @@ impl App {
     pub(crate) fn draw_overlay(&self, frame: &mut Frame) {
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
-            Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind is literal and case sensitive. Enter: next; With Enter: one.\nAlt+R/A: replace one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nF2 / Ctrl+P: commands · F9: focus/hide sidebar\nLive view reveals active source. UTF-8 files up to 8 MiB.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
+            Overlay::Help => (" Marklane · Help · ↑↓ Scroll ", HELP_LINES[self.help_scroll..].join("\n")),
             Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
             Overlay::SaveAs { path, .. } => (" Save As · new filename ", format!("{}▏\n\nEnter: Save  ·  Esc: Cancel\nExisting files are protected; enter a new path.\n\n{}", safe_text(path), safe_text(&self.message))),
         };
@@ -1698,6 +1814,67 @@ fn is_markdown(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+    #[test]
+    fn typing_groups_end_at_view_changes_help_and_deactivation() {
+        let mut app = App::open(None).unwrap();
+        for c in "first".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
+        for c in "second".chars() {
+            key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "first");
+        key(
+            &mut app,
+            KeyCode::Char('Z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.document.text(), "firstsecond");
+        app.deactivate();
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "firstsecondx");
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "firstsecond");
+    }
+
+    #[test]
+    fn tab_keeps_literal_caret_input_and_indents_selected_lines() {
+        let mut app = App::new("one\r\ntwo".into(), None, true);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "\tone\r\ntwo");
+        key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.document.text(), "one\r\ntwo");
+        app.document.select_all();
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "    one\r\n    two");
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "one\r\ntwo");
+        assert_eq!(app.document.selected_text(), "one\r\ntwo");
+    }
+
+    #[test]
+    fn help_scroll_reaches_every_shortcut_without_editing_the_document() {
+        let mut app = App::new("Keep this source".into(), None, true);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        let screen = crate::simulation::snapshot(&mut app, 42, 12).unwrap();
+        assert!(screen.contains("Esc closes help."));
+        key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(app.help_scroll, 0);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(app.help_scroll, 8);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "Keep this source");
+        assert!(!app.document.can_undo());
+    }
+
     fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
