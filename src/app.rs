@@ -1,6 +1,6 @@
 use crate::{
     clipboard::{self, Clipboard},
-    file_io::FileState,
+    file_io::{ExternalChange, FileState},
     projection::{Affinity, Parsed, Projection, safe_text},
     search::{
         Action as SearchAction, Button as SearchButton, FieldDrag, FieldGlyph, FieldMap, Focus,
@@ -18,7 +18,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
-use std::{io, path::PathBuf};
+use std::{cell::Cell, io, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -63,6 +63,7 @@ const HELP_LINES: &[&str] = &[
     "Ctrl+T: toggle task · Ctrl+E / F6: live/source",
     "Ctrl+A: select all · Ctrl+C/X/V: copy/cut/paste",
     "Ctrl+S: save · F4 / Ctrl+Shift+S: Save As",
+    "F5: reload from disk · dirty text needs confirmation",
     "Ctrl+N: new · Ctrl+O: open · Ctrl+W: close tab",
     "F7/F8 or Ctrl+PageUp/PageDown: switch tabs",
     "F2 / Ctrl+P: commands · Ctrl+G: go to source line",
@@ -81,14 +82,16 @@ enum Overlay {
     None,
     Help,
     Quit,
+    Reload,
     SaveAs { path: String, quit_after: bool },
     Search { replace: bool },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MessageOrigin {
     General,
     Clipboard,
+    Disk,
 }
 
 pub struct App {
@@ -111,6 +114,8 @@ pub struct App {
     field_drag: Option<FieldDrag>,
     overlay: Overlay,
     help_scroll: usize,
+    reload_prompt_visible: Cell<bool>,
+    last_disk_change: Option<ExternalChange>,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -134,6 +139,126 @@ impl App {
         Ok(Self::new(text, Some(file), markdown))
     }
 
+    /// Restore recovery content in a detached, explicitly unsaved tab. Selection
+    /// is clamped to complete graphemes; even an empty buffer remains dirty until
+    /// Save As succeeds. Restoring never writes to its former disk path.
+    pub(crate) fn recovered(
+        text: String,
+        selection: Selection,
+        live: bool,
+        markdown: bool,
+    ) -> Self {
+        let mut app = Self::new(text, None, markdown);
+        app.document = Document::unsaved(app.document.text());
+        let selection = Selection {
+            anchor: app.document.floor_grapheme_boundary(selection.anchor),
+            head: app.document.floor_grapheme_boundary(selection.head),
+        };
+        app.document
+            .set_selection(selection)
+            .expect("clamped recovery selection");
+        app.live = live && markdown;
+        app
+    }
+
+    /// Poll advisory disk status without changing document text, selection or
+    /// typing groups. Returns whether the visible status needs a redraw.
+    pub(crate) fn check_external_change(&mut self) -> bool {
+        let Some(file) = &mut self.file else {
+            return false;
+        };
+        let status = file.external_change();
+        if self.last_disk_change.as_ref() == Some(&status) {
+            return false;
+        }
+        self.last_disk_change = Some(status.clone());
+        let message = match status {
+            ExternalChange::Unchanged => {
+                if self.message_origin == MessageOrigin::Disk {
+                    self.message.clear();
+                    self.message_is_error = false;
+                    self.message_origin = MessageOrigin::General;
+                    return true;
+                }
+                return false;
+            }
+            ExternalChange::Changed => {
+                "Disk file changed. F5: reload · F4: Save As; your text is intact".into()
+            }
+            ExternalChange::Missing => {
+                "Disk file is missing. Your text is intact; use F4: Save As or restore the file"
+                    .into()
+            }
+            ExternalChange::Unreadable(error) => format!(
+                "Cannot read disk file: {error}. Your text is intact; retry F5 or use F4: Save As"
+            ),
+        };
+        self.set_message(message);
+        self.message_origin = MessageOrigin::Disk;
+        true
+    }
+
+    /// Reload clean files immediately; dirty buffers require a visible Y/N
+    /// confirmation. Read and history-capacity errors always retain local text.
+    pub(crate) fn request_reload(&mut self) {
+        self.document.break_undo_group();
+        if self.has_modal() {
+            return;
+        }
+        if self.file.is_none() {
+            self.set_message("This buffer has no disk file. Use F4: Save As first");
+        } else if self.document.is_dirty() {
+            self.overlay = Overlay::Reload;
+            self.reload_prompt_visible.set(false);
+        } else {
+            self.reload_from_disk();
+        }
+    }
+
+    fn reload_from_disk(&mut self) {
+        let result = self
+            .file
+            .as_ref()
+            .ok_or_else(|| io::Error::other("This buffer has no disk file"))
+            .and_then(|file| file.reload_bounded(8 * 1024 * 1024));
+        match result {
+            Ok((text, file)) => match self.document.reload_saved(text) {
+                Ok(changed) => {
+                    self.file = Some(file);
+                    self.last_disk_change = None;
+                    self.deactivate();
+                    self.parsed = Parsed::new(
+                        self.document.text(),
+                        self.document.markdown(),
+                        self.markdown,
+                    );
+                    self.layout_key = None;
+                    self.preferred_column = None;
+                    self.affinity = Affinity::Downstream;
+                    self.follow_cursor = true;
+                    self.message = if changed {
+                        "Reloaded disk version · Ctrl+Z restores previous text"
+                    } else {
+                        "Disk version already matches your text"
+                    }
+                    .into();
+                    self.message_is_error = false;
+                    self.message_origin = MessageOrigin::General;
+                }
+                Err(error) => {
+                    self.overlay = Overlay::None;
+                    self.reload_prompt_visible.set(false);
+                    self.set_message(error.to_string());
+                }
+            },
+            Err(error) => {
+                self.overlay = Overlay::None;
+                self.reload_prompt_visible.set(false);
+                self.set_message(format!("Reload failed: {error}. Your text is intact"));
+            }
+        }
+    }
+
     pub(crate) fn path(&self) -> Option<&std::path::Path> {
         self.file.as_ref().map(|file| file.path.as_path())
     }
@@ -141,12 +266,15 @@ impl App {
     pub(crate) fn has_modal(&self) -> bool {
         matches!(
             self.overlay,
-            Overlay::Help | Overlay::SaveAs { .. } | Overlay::Quit
+            Overlay::Help | Overlay::SaveAs { .. } | Overlay::Quit | Overlay::Reload
         )
     }
 
     pub(crate) fn workspace_commands_allowed(&self) -> bool {
-        !matches!(self.overlay, Overlay::SaveAs { .. } | Overlay::Quit)
+        !matches!(
+            self.overlay,
+            Overlay::SaveAs { .. } | Overlay::Quit | Overlay::Reload
+        )
     }
 
     pub(crate) fn pending_save_path(&self) -> Option<PathBuf> {
@@ -187,6 +315,7 @@ impl App {
 
     pub(crate) fn deactivate(&mut self) {
         self.document.break_undo_group();
+        self.reload_prompt_visible.set(false);
         self.overlay = Overlay::None;
         self.search = Search::default();
         self.search_geometry = SearchGeometry::default();
@@ -249,6 +378,8 @@ impl App {
             field_drag: None,
             overlay: Overlay::None,
             help_scroll: 0,
+            reload_prompt_visible: Cell::new(false),
+            last_disk_change: None,
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -302,6 +433,7 @@ impl App {
             }
             Event::Mouse(event) if self.overlay == Overlay::None => self.mouse(event),
             Event::Resize(width, height) => {
+                self.reload_prompt_visible.set(false);
                 self.terminal_height = height;
                 self.terminal_width = width;
                 self.dragging = false;
@@ -461,6 +593,7 @@ impl App {
                 }
             }
             KeyCode::F(4) => self.start_save_as(false),
+            KeyCode::F(5) => self.request_reload(),
             KeyCode::F(6) => self.toggle_view(),
             KeyCode::Esc => {
                 let _ = self.document.set_caret(self.document.selection().head);
@@ -806,6 +939,10 @@ impl App {
             self.start_save_as(false);
             return;
         }
+        if key.code == KeyCode::F(5) {
+            self.request_reload();
+            return;
+        }
         if !self.search_ready() {
             self.search_too_short();
             return;
@@ -1017,6 +1154,7 @@ impl App {
             match file.save(self.document.text()) {
                 Ok(()) => {
                     self.document.mark_saved();
+                    self.last_disk_change = None;
                     self.message = format!("Saved {}", safe_text(&file.path.display().to_string()));
                     self.message_is_error = false;
                     self.message_origin = MessageOrigin::General;
@@ -1036,6 +1174,24 @@ impl App {
     fn overlay_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
             self.overlay = Overlay::None;
+            self.reload_prompt_visible.set(false);
+            return;
+        }
+        if self.overlay == Overlay::Reload {
+            if key.kind == KeyEventKind::Press
+                && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+            {
+                match key.code {
+                    KeyCode::Char('n' | 'N') => {
+                        self.overlay = Overlay::None;
+                        self.reload_prompt_visible.set(false);
+                    }
+                    KeyCode::Char('y' | 'Y') if self.reload_prompt_visible.get() => {
+                        self.reload_from_disk()
+                    }
+                    _ => {}
+                }
+            }
             return;
         }
         match &mut self.overlay {
@@ -1073,6 +1229,7 @@ impl App {
                             self.message_is_error = false;
                             self.message_origin = MessageOrigin::General;
                             self.file = Some(file);
+                            self.last_disk_change = None;
                             self.document.mark_saved();
                             self.overlay = Overlay::None;
                             self.should_exit = quit_after;
@@ -1100,7 +1257,7 @@ impl App {
                 }
                 _ => {}
             },
-            Overlay::None | Overlay::Search { .. } => {}
+            Overlay::None | Overlay::Search { .. } | Overlay::Reload => {}
         }
     }
 
@@ -1541,6 +1698,7 @@ impl App {
             Overlay::Help => "↑↓ Scroll · Esc Close",
             Overlay::SaveAs { .. } => "Enter Save · Esc Cancel",
             Overlay::Quit => "Y Save · N Discard · Esc Cancel",
+            Overlay::Reload => "Y Reload · N/Esc Keep editing",
             Overlay::None if area.width < 60 => "F1 Help",
             Overlay::None => "^S Save · ^F Find · F2 Commands · F1 Help",
         };
@@ -1601,9 +1759,13 @@ impl App {
     }
 
     pub(crate) fn draw_overlay(&self, frame: &mut Frame) {
+        self.reload_prompt_visible.set(false);
+        let reload_fits = frame.area().width >= 44 && frame.area().height >= 9;
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
             Overlay::Help => (" Marklane · Help · ↑↓ Scroll ", HELP_LINES[self.help_scroll..].join("\n")),
+            Overlay::Reload if reload_fits => (" Reload from disk ", "Replace local edits with disk text?\nUndo can restore your local edits.\n\nY: Reload  N/Esc: Keep editing".into()),
+            Overlay::Reload => (" Reload ", "Resize to confirm reload.\nEsc: Keep editing".into()),
             Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
             Overlay::SaveAs { path, .. } => (" Save As · new filename ", format!("{}▏\n\nEnter: Save  ·  Esc: Cancel\nExisting files are protected; enter a new path.\n\n{}", safe_text(path), safe_text(&self.message))),
         };
@@ -1639,6 +1801,9 @@ impl App {
             ),
             popup,
         );
+        if self.overlay == Overlay::Reload && reload_fits {
+            self.reload_prompt_visible.set(true);
+        }
     }
 }
 
@@ -1814,6 +1979,315 @@ fn is_markdown(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+    fn disk_app(source: &str) -> (tempfile::TempDir, PathBuf, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("external.md");
+        std::fs::write(&path, source).unwrap();
+        let app = App::open(Some(path.clone())).unwrap();
+        (dir, path, app)
+    }
+
+    #[test]
+    fn identical_reload_does_not_promise_an_undo_step() {
+        let (_dir, _path, mut app) = disk_app("unchanged");
+        app.request_reload();
+        assert!(!app.document.can_undo());
+        assert!(!app.document.is_dirty());
+        assert!(app.message.contains("already matches"));
+        assert!(!app.message.contains("Ctrl+Z"));
+    }
+
+    #[test]
+    fn save_as_starts_fresh_external_status_for_the_new_path() {
+        let (dir, old, mut app) = disk_app("base");
+        std::fs::write(&old, "external old").unwrap();
+        app.check_external_change();
+        let new = dir.path().join("new.md");
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        app.handle_event(Event::Paste(new.display().to_string()));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        std::fs::write(&new, "external new").unwrap();
+        assert!(app.check_external_change());
+        assert_eq!(app.message_origin, MessageOrigin::Disk);
+        assert!(app.message.contains("Disk file changed"));
+        assert_eq!(app.document.text(), "base");
+    }
+
+    #[test]
+    fn disk_poll_reports_changes_and_recovery_without_mutating_editor() {
+        let (_dir, path, mut app) = disk_app("e\u{301} original\r\n");
+        app.document
+            .set_selection(Selection {
+                anchor: app.document.text().len(),
+                head: 3,
+            })
+            .unwrap();
+        let selection = app.document.selection();
+        assert!(!app.check_external_change());
+        std::fs::write(&path, "external edit").unwrap();
+        assert!(app.check_external_change());
+        assert_eq!(app.message_origin, MessageOrigin::Disk);
+        assert!(app.message.contains("F5"));
+        assert!(!app.check_external_change());
+        assert_eq!(app.document.text(), "e\u{301} original\r\n");
+        assert_eq!(app.document.selection(), selection);
+        assert!(!app.document.can_undo());
+        std::fs::remove_file(&path).unwrap();
+        assert!(app.check_external_change());
+        assert!(app.message.contains("missing"));
+        std::fs::create_dir(&path).unwrap();
+        assert!(app.check_external_change());
+        assert!(app.message.contains("Cannot read"));
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, app.document.text()).unwrap();
+        assert!(app.check_external_change());
+        assert!(app.message.is_empty());
+        assert!(!app.message_is_error);
+        app.set_message("Different actionable error");
+        assert!(!app.check_external_change());
+        assert_eq!(app.message, "Different actionable error");
+    }
+
+    #[test]
+    fn periodic_poll_does_not_split_contiguous_typing() {
+        let (_dir, _path, mut app) = disk_app("");
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        app.check_external_change();
+        key(&mut app, KeyCode::Char('b'), KeyModifiers::NONE);
+        app.check_external_change();
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "");
+    }
+
+    #[test]
+    fn clean_reload_resets_transient_state_and_keeps_undo_dirty_against_new_disk() {
+        let source = "old original source";
+        let (_dir, path, mut app) = disk_app(source);
+        search(&mut app, "original", false);
+        app.document
+            .set_selection(Selection {
+                anchor: source.len(),
+                head: 2,
+            })
+            .unwrap();
+        let selection = app.document.selection();
+        app.preferred_column = Some(15);
+        std::fs::write(&path, "e\u{301}界\r\n").unwrap();
+        key(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "e\u{301}界\r\n");
+        assert_eq!(
+            app.document.selection(),
+            Selection {
+                anchor: app.document.text().len(),
+                head: 0
+            }
+        );
+        assert!(!app.document.is_dirty());
+        assert!(!app.has_modal());
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app.search.query.text().is_empty());
+        assert!(app.preferred_column.is_none());
+        assert_eq!(app.parsed.snapshot.revision, app.document.revision());
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), source);
+        assert_eq!(app.document.selection(), selection);
+        assert!(app.document.is_dirty());
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert!(!app.document.is_dirty());
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn dirty_reload_requires_a_visible_unmodified_nonrepeat_confirmation() {
+        let (_dir, path, mut app) = disk_app("base");
+        app.document.insert("local ");
+        let local = app.document.text().to_owned();
+        let selection = app.document.selection();
+        std::fs::write(&path, "disk").unwrap();
+        app.request_reload();
+        assert_eq!(app.overlay, Overlay::Reload);
+        assert!(app.has_modal());
+        assert!(!app.workspace_commands_allowed());
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(app.document.text(), local);
+        let terminal = draw(&mut app, 80, 24);
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Replace local edits with disk text?"));
+        assert!(screen.contains("Y: Reload  N/Esc: Keep editing"));
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            key(&mut app, KeyCode::Char('y'), modifiers);
+            assert_eq!(app.document.text(), local);
+        }
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            app.handle_event(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+                kind,
+            )));
+            assert_eq!(app.document.text(), local);
+        }
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(app.document.selection(), selection);
+        assert_eq!(app.overlay, Overlay::None);
+        app.request_reload();
+        draw(&mut app, 80, 24);
+        std::fs::write(&path, "newest disk version").unwrap();
+        key(&mut app, KeyCode::Char('Y'), KeyModifiers::SHIFT);
+        assert_eq!(app.document.text(), "newest disk version");
+        assert!(!app.document.is_dirty());
+        app.document.undo();
+        assert_eq!(app.document.text(), local);
+        assert_eq!(app.document.selection(), selection);
+        assert!(app.document.is_dirty());
+        app.document.redo();
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn tiny_resized_or_cancelled_reload_prompts_cannot_discard_text() {
+        let (_dir, path, mut app) = disk_app("base");
+        app.document.insert("local ");
+        std::fs::write(&path, "disk").unwrap();
+        let local = app.document.text().to_owned();
+        for (width, height) in [(12, 4), (43, 20), (80, 8)] {
+            app.request_reload();
+            draw(&mut app, width, height);
+            key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+            assert_eq!(app.document.text(), local);
+            assert_eq!(app.overlay, Overlay::Reload);
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            assert_eq!(app.overlay, Overlay::None);
+        }
+        app.request_reload();
+        draw(&mut app, 80, 24);
+        app.handle_event(Event::Resize(12, 4));
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(app.document.text(), local);
+        draw(&mut app, 12, 4);
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(app.document.text(), local);
+        app.handle_event(Event::Resize(80, 24));
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(app.document.text(), local);
+        draw(&mut app, 80, 24);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(app.document.text().contains("base"));
+        assert!(app.document.is_dirty());
+    }
+
+    #[test]
+    fn reload_errors_and_history_rejection_preserve_local_state_and_baseline() {
+        for invalid in [
+            Some(vec![0xff]),
+            Some(b"binary\0data".to_vec()),
+            Some(vec![b'x'; 8 * 1024 * 1024 + 1]),
+            None,
+        ] {
+            let (_dir, path, mut app) = disk_app("base");
+            app.document.insert("local ");
+            let before = (
+                app.document.text().to_owned(),
+                app.document.selection(),
+                app.document.revision(),
+            );
+            if let Some(bytes) = invalid {
+                std::fs::write(&path, bytes).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            app.request_reload();
+            draw(&mut app, 80, 24);
+            key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+            assert_eq!(
+                (
+                    app.document.text(),
+                    app.document.selection(),
+                    app.document.revision()
+                ),
+                (before.0.as_str(), before.1, before.2)
+            );
+            assert!(app.message.contains("Reload failed"));
+            assert!(!app.has_modal());
+            assert!(app.document.is_dirty());
+            std::fs::write(&path, "base").unwrap();
+            key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before.0);
+        }
+        for dirty in [false, true] {
+            let (_dir, path, mut app) = disk_app("base");
+            if dirty {
+                app.document.insert("local ");
+            }
+            app.document.set_history_limits(marklane::HistoryLimits {
+                max_entries: 0,
+                max_bytes: 0,
+            });
+            let before = app.document.text().to_owned();
+            std::fs::write(&path, "disk").unwrap();
+            app.request_reload();
+            if dirty {
+                draw(&mut app, 80, 24);
+                key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+            }
+            assert_eq!(app.document.text(), before);
+            assert!(app.message.contains("history limits"));
+            assert_eq!(app.document.is_dirty(), dirty);
+            key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            assert!(app.message_is_error);
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "disk");
+        }
+    }
+
+    #[test]
+    fn recovered_empty_and_unicode_content_are_detached_unsaved_and_saveable() {
+        for source in ["", "e\u{301}界👩🏽‍💻\r\n"] {
+            let mut app = App::recovered(
+                source.into(),
+                Selection {
+                    anchor: usize::MAX,
+                    head: 1,
+                },
+                true,
+                true,
+            );
+            assert_eq!(app.document.text(), source);
+            assert!(app.document.is_dirty());
+            assert!(app.path().is_none());
+            assert!(!app.document.can_undo());
+            assert_eq!(
+                app.document.selection(),
+                Selection {
+                    anchor: source.len(),
+                    head: 0
+                }
+            );
+            assert!(!app.check_external_change());
+            app.request_reload();
+            assert_eq!(app.document.text(), source);
+            assert!(!app.has_modal());
+            key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+            assert!(app.saving_as());
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("recovered.md");
+            app.handle_event(Event::Paste(path.display().to_string()));
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+            assert!(!app.document.is_dirty());
+        }
+        let app = App::recovered("text".into(), Selection::caret(0), true, false);
+        assert!(!app.live);
+    }
 
     #[test]
     fn typing_groups_end_at_view_changes_help_and_deactivation() {

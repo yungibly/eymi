@@ -3,11 +3,53 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalChange {
+    Unchanged,
+    Changed,
+    Missing,
+    Unreadable(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Fingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+    readonly: bool,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64, u32, u64),
+}
+
+impl Fingerprint {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            readonly: metadata.permissions().readonly(),
+            #[cfg(unix)]
+            identity: {
+                use std::os::unix::fs::MetadataExt;
+                (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                    metadata.mode(),
+                    metadata.nlink(),
+                )
+            },
+        }
+    }
+}
 
 pub struct FileState {
     pub path: PathBuf,
     baseline: Option<Vec<u8>>,
+    observed: Option<Fingerprint>,
+    external: ExternalChange,
 }
 
 impl FileState {
@@ -32,7 +74,21 @@ impl FileState {
                 "Only valid UTF-8 files are supported; the file was not changed",
             )
         })?;
-        Ok((text, Self { path, baseline }))
+        if text.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "This file contains binary NUL bytes; choose a UTF-8 text file",
+            ));
+        }
+        Ok((
+            text,
+            Self {
+                path,
+                baseline,
+                observed: None,
+                external: ExternalChange::Unchanged,
+            },
+        ))
     }
 
     pub fn new_target(path: PathBuf) -> io::Result<Self> {
@@ -45,7 +101,79 @@ impl FileState {
         Ok(Self {
             path,
             baseline: None,
+            observed: None,
+            external: ExternalChange::Unchanged,
         })
+    }
+
+    /// Advisory periodic check. Unchanged metadata avoids a content read; save
+    /// always compares exact bytes regardless of this cache. Read errors are
+    /// retried so access can recover without a detectable metadata change.
+    pub fn external_change(&mut self) -> ExternalChange {
+        let metadata = match fs::metadata(&self.path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => {
+                self.observed = None;
+                self.external = ExternalChange::Unreadable(non_regular_error().to_string());
+                return self.external.clone();
+            }
+            Err(error) => {
+                self.observed = None;
+                self.external = if error.kind() == io::ErrorKind::NotFound {
+                    if self.baseline.is_none() {
+                        ExternalChange::Unchanged
+                    } else {
+                        ExternalChange::Missing
+                    }
+                } else {
+                    ExternalChange::Unreadable(error.to_string())
+                };
+                return self.external.clone();
+            }
+        };
+        let fingerprint = Fingerprint::of(&metadata);
+        if self.observed.as_ref() == Some(&fingerprint)
+            && !matches!(self.external, ExternalChange::Unreadable(_))
+        {
+            return self.external.clone();
+        }
+        self.external = match open_regular_file(&self.path) {
+            Ok(file) => match &self.baseline {
+                Some(baseline) => match matches_baseline(file, baseline) {
+                    Ok(true) => ExternalChange::Unchanged,
+                    Ok(false) => ExternalChange::Changed,
+                    Err(error) => ExternalChange::Unreadable(error.to_string()),
+                },
+                None => ExternalChange::Changed,
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if self.baseline.is_none() {
+                    ExternalChange::Unchanged
+                } else {
+                    ExternalChange::Missing
+                }
+            }
+            Err(error) => ExternalChange::Unreadable(error.to_string()),
+        };
+        self.observed = Some(fingerprint);
+        self.external.clone()
+    }
+
+    /// Read an existing regular file and stage a replacement FileState. A failed
+    /// reload never changes the accepted baseline. Detect replacement or writes
+    /// during the read and ask the caller to retry rather than accepting a mix.
+    pub fn reload_bounded(&self, max_bytes: usize) -> io::Result<(String, Self)> {
+        let mut file = open_regular_file(&self.path)?;
+        let before = Fingerprint::of(&file.metadata()?);
+        let bytes = read_limited(&mut file, max_bytes)?;
+        let after = Fingerprint::of(&file.metadata()?);
+        let path = fs::metadata(&self.path)?;
+        if !path.is_file() || before != after || after != Fingerprint::of(&path) {
+            return Err(io::Error::other(
+                "File changed while reloading; your text is intact. Try Reload again",
+            ));
+        }
+        Self::from_baseline(self.path.clone(), Some(bytes))
     }
 
     pub fn save(&mut self, text: &str) -> io::Result<()> {
@@ -80,6 +208,8 @@ impl FileState {
             temporary.persist(&self.path).map_err(|e| e.error)?;
         }
         self.baseline = Some(text.as_bytes().to_vec());
+        self.observed = None;
+        self.external = ExternalChange::Unchanged;
         Ok(())
     }
 
@@ -225,6 +355,131 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_status_tracks_writes_removal_reappearance_and_nonregular_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.md");
+        fs::write(&path, "base").unwrap();
+        let (_, mut state) = FileState::open(path.clone()).unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Unchanged);
+        assert!(state.observed.is_some());
+        fs::write(&path, "external text").unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Changed);
+        assert_eq!(state.external_change(), ExternalChange::Changed);
+        assert!(state.save("local").is_err());
+        fs::remove_file(&path).unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Missing);
+        assert!(state.reload_bounded(1024).is_err());
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            state.external_change(),
+            ExternalChange::Unreadable(_)
+        ));
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, "base").unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Unchanged);
+        state.save("local").unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Unchanged);
+        assert_eq!(state.baseline.as_deref(), Some(b"local".as_slice()));
+    }
+
+    #[test]
+    fn metadata_only_changes_and_noop_save_preserve_file_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.md");
+        fs::write(&path, "base").unwrap();
+        let (_, mut state) = FileState::open(path.clone()).unwrap();
+        state.external_change();
+        let writable = fs::metadata(&path).unwrap().permissions();
+        let mut readonly = writable.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&path, readonly).unwrap();
+        let before = Fingerprint::of(&fs::metadata(&path).unwrap());
+        let status = state.external_change();
+        let saved = state.save("base");
+        let after = Fingerprint::of(&fs::metadata(&path).unwrap());
+        fs::set_permissions(&path, writable).unwrap();
+        assert_eq!(status, ExternalChange::Unchanged);
+        saved.unwrap();
+        assert_eq!(before, after);
+        // Even if the advisory fingerprint were fooled, save still checks bytes.
+        fs::write(&path, "evil").unwrap();
+        state.observed = Some(Fingerprint::of(&fs::metadata(&path).unwrap()));
+        state.external = ExternalChange::Unchanged;
+        assert_eq!(state.external_change(), ExternalChange::Unchanged);
+        assert!(state.save("base").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "evil");
+    }
+
+    #[test]
+    fn reload_requires_existing_bounded_text_and_leaves_old_state_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.md");
+        fs::write(&path, "base").unwrap();
+        let (_, mut state) = FileState::open(path.clone()).unwrap();
+        for bytes in [vec![0xff], b"null\0byte".to_vec(), b"oversized".to_vec()] {
+            fs::write(&path, bytes).unwrap();
+            assert!(state.reload_bounded(8).is_err());
+            assert_eq!(state.baseline.as_deref(), Some(b"base".as_slice()));
+        }
+        fs::remove_file(&path).unwrap();
+        assert!(state.reload_bounded(8).is_err());
+        assert!(!path.exists());
+        fs::write(&path, "é\r\n").unwrap();
+        let (text, mut fresh) = state.reload_bounded(8).unwrap();
+        assert_eq!(text, "é\r\n");
+        fresh.save(&text).unwrap();
+        assert!(state.save("base").is_err());
+        fresh.save("new").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn missing_new_target_is_unchanged_until_created_externally() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.md");
+        let mut state = FileState::new_target(path.clone()).unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Unchanged);
+        assert!(state.reload_bounded(10).is_err());
+        fs::write(path, "").unwrap();
+        assert_eq!(state.external_change(), ExternalChange::Changed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_unreadability_recovers_and_reload_preserves_link_rules() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.md");
+        fs::write(&path, "base").unwrap();
+        let (_, mut state) = FileState::open(path.clone()).unwrap();
+        state.external_change();
+        let writable = fs::metadata(&path).unwrap().permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let status = state.external_change();
+        let reload = state.reload_bounded(20);
+        fs::set_permissions(&path, writable).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(matches!(status, ExternalChange::Unreadable(_)));
+            assert!(reload.is_err());
+        }
+        assert_eq!(state.external_change(), ExternalChange::Unchanged);
+        let link = dir.path().join("link.md");
+        symlink(&path, &link).unwrap();
+        let (_, linked) = FileState::open(link).unwrap();
+        fs::write(&path, "fresh").unwrap();
+        let (text, mut linked) = linked.reload_bounded(20).unwrap();
+        linked.save(&text).unwrap();
+        assert!(linked.save("changes").is_err());
+        let hard = dir.path().join("hard.md");
+        fs::hard_link(&path, &hard).unwrap();
+        let (_, hard) = FileState::open(hard).unwrap();
+        let (text, mut hard) = hard.reload_bounded(20).unwrap();
+        hard.save(&text).unwrap();
+        assert!(hard.save("changes").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "fresh");
+    }
 
     #[test]
     fn baseline_comparison_is_exact_and_reads_at_most_one_extra_byte() {

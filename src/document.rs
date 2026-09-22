@@ -16,6 +16,130 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unsaved_buffers_have_no_baseline_even_when_empty() {
+        for source in ["", "e\u{301}👩🏽‍💻\r\n"] {
+            let mut doc = Document::unsaved(source);
+            assert!(doc.is_dirty());
+            assert!(!doc.can_undo());
+            doc.insert("x");
+            doc.undo();
+            assert_eq!(doc.text(), source);
+            assert!(doc.is_dirty());
+            doc.mark_saved();
+            assert!(!doc.is_dirty());
+        }
+    }
+
+    #[test]
+    fn reload_is_undoable_against_the_latest_disk_baseline() {
+        let mut doc = Document::new("original long text");
+        doc.insert("local ");
+        let before = doc.text().to_owned();
+        let selection = Selection {
+            anchor: before.len(),
+            head: 2,
+        };
+        doc.set_selection(selection).unwrap();
+        assert!(doc.reload_saved("e\u{301}界\r\n".into()).unwrap());
+        assert_eq!(
+            doc.selection(),
+            Selection {
+                anchor: doc.text().len(),
+                head: 0
+            }
+        );
+        assert!(!doc.is_dirty());
+        assert!(doc.undo());
+        assert_eq!(doc.text(), before);
+        assert_eq!(doc.selection(), selection);
+        assert!(doc.is_dirty());
+        assert!(doc.redo());
+        assert!(!doc.is_dirty());
+        doc.undo();
+        doc.type_text("new branch");
+        assert!(!doc.can_redo());
+        assert!(doc.is_dirty());
+    }
+
+    #[test]
+    fn reload_rejects_unretainable_snapshot_without_advancing_baseline() {
+        for limits in [
+            HistoryLimits {
+                max_entries: 0,
+                max_bytes: usize::MAX,
+            },
+            HistoryLimits {
+                max_entries: 10,
+                max_bytes: std::mem::size_of::<State>() + 2,
+            },
+        ] {
+            let mut doc = Document::new("base");
+            doc.insert("local");
+            doc.set_history_limits(limits);
+            let before = (
+                doc.text().to_owned(),
+                doc.selection(),
+                doc.revision(),
+                doc.saved_text.clone(),
+                doc.can_redo(),
+            );
+            assert_eq!(
+                doc.reload_saved("disk".into()),
+                Err(EditError::HistoryUnavailable)
+            );
+            assert_eq!(
+                (
+                    doc.text(),
+                    doc.selection(),
+                    doc.revision(),
+                    doc.saved_text.as_str(),
+                    doc.can_redo()
+                ),
+                (
+                    before.0.as_str(),
+                    before.1,
+                    before.2,
+                    before.3.as_str(),
+                    before.4
+                )
+            );
+            assert!(doc.is_dirty());
+        }
+    }
+
+    #[test]
+    fn reload_retains_its_immediate_inverse_under_a_one_entry_limit() {
+        let mut doc = Document::new("base");
+        doc.set_history_limits(HistoryLimits {
+            max_entries: 1,
+            max_bytes: 1024,
+        });
+        doc.type_text("local");
+        let old = doc.text().to_owned();
+        doc.reload_saved("fresh".into()).unwrap();
+        assert_eq!(doc.undo.len(), 1);
+        doc.undo();
+        assert_eq!(doc.text(), old);
+        assert!(doc.is_dirty());
+        doc.redo();
+        assert_eq!(doc.text(), "fresh");
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn identical_reload_adopts_baseline_without_fabricating_an_edit() {
+        let mut doc = Document::unsaved("");
+        doc.set_history_limits(HistoryLimits {
+            max_entries: 0,
+            max_bytes: 0,
+        });
+        assert!(!doc.reload_saved("".into()).unwrap());
+        assert!(!doc.is_dirty());
+        assert!(!doc.can_undo());
+        assert_eq!(doc.revision(), 0);
+    }
+
+    #[test]
     fn source_fidelity_and_navigation_do_not_dirty() {
         for source in [
             "",
@@ -488,6 +612,7 @@ pub enum EditError {
     InvalidRange,
     StaleRevision { expected: u64, actual: u64 },
     InvalidTask,
+    HistoryUnavailable,
 }
 
 impl fmt::Display for EditError {
@@ -502,6 +627,10 @@ impl fmt::Display for EditError {
                 "stale task revision {expected}; current revision is {actual}"
             ),
             Self::InvalidTask => write!(f, "source range is not a current task marker"),
+            Self::HistoryUnavailable => write!(
+                f,
+                "Reload cannot retain your current text in Undo within the history limits; save it separately first"
+            ),
         }
     }
 }
@@ -539,6 +668,7 @@ impl Default for HistoryLimits {
 pub struct Document {
     state: State,
     saved_text: String,
+    has_saved_baseline: bool,
     revision: u64,
     undo: VecDeque<State>,
     redo: VecDeque<State>,
@@ -551,6 +681,7 @@ impl Document {
         let text = text.into();
         Self {
             saved_text: text.clone(),
+            has_saved_baseline: true,
             state: State {
                 text,
                 selection: Selection::default(),
@@ -563,6 +694,53 @@ impl Document {
         }
     }
 
+    /// Create file-detached content with no accepted saved baseline, including
+    /// an empty recovered buffer. No fake edit or undo entry is introduced.
+    pub fn unsaved(text: impl Into<String>) -> Self {
+        let mut document = Self::new(text);
+        document.saved_text = String::new();
+        document.has_saved_baseline = false;
+        document
+    }
+
+    /// Accept fresh disk content as the saved baseline. A changed source is one
+    /// independent undo step, preserving the old directional selection. Undo
+    /// restores old source as a local edit against the newly accepted baseline.
+    /// Selection offsets clamp downward to valid grapheme boundaries in the new
+    /// source. Reject replacements whose prior snapshot cannot be retained.
+    pub fn reload_saved(&mut self, text: String) -> Result<bool, EditError> {
+        self.break_undo_group();
+        let changed = text != self.state.text;
+        if changed {
+            let previous = self.state.clone();
+            if self.history_limits.max_entries == 0
+                || previous.text.capacity() + std::mem::size_of::<State>()
+                    > self.history_limits.max_bytes
+            {
+                return Err(EditError::HistoryUnavailable);
+            }
+            let clamp = |offset: usize| {
+                text.grapheme_indices(true)
+                    .map(|(i, _)| i)
+                    .chain(std::iter::once(text.len()))
+                    .take_while(|&i| i <= offset.min(text.len()))
+                    .last()
+                    .unwrap_or(0)
+            };
+            let selection = Selection {
+                anchor: clamp(self.selection().anchor),
+                head: clamp(self.selection().head),
+            };
+            self.undo.push_back(previous);
+            self.state = State { text, selection };
+            self.redo.clear();
+            self.trim_history();
+            self.revision += 1;
+        }
+        self.mark_saved();
+        Ok(changed)
+    }
+
     pub fn text(&self) -> &str {
         &self.state.text
     }
@@ -573,11 +751,12 @@ impl Document {
         self.revision
     }
     pub fn is_dirty(&self) -> bool {
-        self.state.text != self.saved_text
+        !self.has_saved_baseline || self.state.text != self.saved_text
     }
     pub fn mark_saved(&mut self) {
         self.break_undo_group();
         self.saved_text.clone_from(&self.state.text);
+        self.has_saved_baseline = true;
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
