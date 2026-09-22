@@ -4,7 +4,8 @@
 
 The editor now embeds 624 palettes and has a searchable preview picker, saved
 preferences, and a recovery workflow. The actual executable passes 182 terminal
-assertions: 75 each in Sage dark/light 25 across seven imported themes, and 7 release-binary reload assertions.
+assertions: 75 each in Sage dark/light, 25 across seven imported themes, and
+7 release-binary reload assertions.
 Current artifacts are `target/visual-theme-recovery-{dark,light}/` and
 `target/visual-imported-themes-final/`, plus release reload frames in
 `target/visual-disk-reload-verified/`. They retain 88 frames and 82 successful PNGs;

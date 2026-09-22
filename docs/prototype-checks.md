@@ -150,6 +150,10 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
   background colors are checked.
   These artifacts record the source revision, worktree diff status, executable
   hash, settings isolation, and exact actions. Total: **182 terminal assertions**.
+- Final release theme/reload captures identify clean source commit `6320d2b`
+  and release SHA-256 `924e90085ac6ee2b87ae1960df435031cbfbaed2688e65f53ad1d1aa3ff1b32e`.
+  Rust 1.98.0 built the optimized binary; `--version`, the 624-entry theme list,
+  and a 120×36 Nord snapshot also pass.
 - Settings/state directories and clipboard are isolated in automated runs;
   no test accesses the user's settings or native clipboard. Native IME,
   clipboard and renderer differences remain a manual compatibility pass.
