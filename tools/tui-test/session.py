@@ -42,7 +42,7 @@ def decode_log_bytes(value):
 
 
 class Session:
-    def __init__(self, tool, binary, output, fixture, palette="dark", size=(80, 24), app_args=()):
+    def __init__(self, tool, binary, output, fixture, palette="dark", size=(80, 24), app_args=(), font="JetBrains Mono"):
         self.tool, self.binary = Path(tool).resolve(), Path(binary).resolve()
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=False)
@@ -64,7 +64,7 @@ class Session:
                         XDG_CONFIG_HOME=str(self.runtime / "config"),
                         XDG_STATE_HOME=str(self.runtime / "state"),
                         SSH_CONNECTION="marklane-visual-test",
-                        COLORTERM="truecolor", TUI_TEST_RECORDING_FONT_FAMILIES="JetBrains Mono")
+                        COLORTERM="truecolor", TUI_TEST_RECORDING_FONT_FAMILIES=font)
         colors = {"dark": ("#171a21", "#d6dce8"), "light": ("#f5f3ed", "#242932")}
         background, foreground = colors[palette]
         config = self.output / "tui-test.toml"
@@ -82,8 +82,9 @@ class Session:
             "app_arguments": self.app_args,
             "fixture_sha256": sha256(fixture), "backend": "ghostty", "initial_size": size,
             "palette": {"name": palette, "background": background, "foreground": foreground},
-            "environment": {"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": None},
-            "font": {"preferred_family": "JetBrains Mono", "cell_pixels": [10, 21], "size": 17,
+            "environment": {"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": None,
+                            "TUI_TEST_RECORDING_FONT_FAMILIES": font},
+            "font": {"preferred_family": font, "cell_pixels": [10, 21], "size": 17,
                      "fallback": "tui-test bundled styles plus system fallback; not fully pinned"},
             "limitations": ["Embedded Ghostty backend is not native Ghostty 1.3.1.",
                             "PNG rasterizer rejects multi-scalar cell graphemes; SVG and cells retained.",

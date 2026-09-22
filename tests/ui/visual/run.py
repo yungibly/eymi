@@ -37,12 +37,14 @@ def expect_match(session, expected, reason):
     session.check(actual == expected, reason, expected=expected, actual=actual)
 
 
-def find_cells(cells, word):
+def find_cells(cells, word, casefold=False):
     for y in sorted({c["y"] for c in cells}):
         row = sorted((c for c in cells if c["y"] == y), key=lambda c: c["x"])
         for index in range(len(row) - len(word) + 1):
             chunk = row[index:index + len(word)]
-            if "".join(c["char"] for c in chunk) == word:
+            text = "".join(c["char"] for c in chunk)
+            matches = text.casefold() == word.casefold() if casefold else text == word
+            if matches:
                 yield chunk
 
 
@@ -209,12 +211,10 @@ def workspace(session):
     """Exercise the new workspace and editing controls through the real PTY."""
     source = session.original_source
     state, cells = session.capture("01-writing-160x45")
-    session.check("DOCUMENTS" in state["text"] and "OUTLINE" in state["text"],
-                  "Wide workspace exposes documents and outline")
+    session.check("DOCUMENTS" not in state["text"] and bool(outline_labels(cells)),
+                  "Wide workspace exposes a heading-only outline")
     heading = "Later, with confidence"
-    targets = [chunk for chunk in find_cells(cells, heading) if chunk[0]["x"] < 27]
-    session.check(len(targets) == 1, "Outline has one visible final-heading target")
-    target = targets[0][1]
+    target = outline_target(session, heading, cells)[1]
     session.call("mouse", "click", target["x"], target["y"])
     heading_line = source.splitlines().index("## " + heading) + 1
     session.check(f"Ln {heading_line}, Col 1" in session.state()["text"],
@@ -295,7 +295,7 @@ def workspace(session):
     for width, height in [(120, 36), (80, 24), (42, 16), (20, 10)]:
         session.call("resize", width, height)
         session.capture(f"08-workspace-{width}x{height}")
-        session.check(("OUTLINE" in session.state()["text"]) == (width >= 110),
+        session.check(bool(outline_labels(session.cells())) == (width >= 110),
                       f"Sidebar adapts to {width}x{height}")
 
     session.key("F2")
@@ -309,6 +309,200 @@ def workspace(session):
     session.capture("10-finished-writing-160x45")
     session.check(not any(c["png_error"] for c in session.captures),
                   "Workspace captures all export as native PNGs")
+
+
+def outline_labels(cells):
+    # Ordinary prose may mention "outline". The rail label sits after decorative
+    # padding and before a vertical boundary, unlike a body occurrence.
+    labels = []
+    for chunk in find_cells(cells, "Outline", casefold=True):
+        row = [c for c in cells if c["y"] == chunk[0]["y"]]
+        left = [c for c in row if c["x"] < chunk[0]["x"]]
+        boundary = any(c["x"] > chunk[-1]["x"] and c["char"] in "│┃┆┊╎▏▕┤┐╮" for c in row)
+        if boundary and not any(any(char.isalnum() for char in c["char"]) for c in left):
+            labels.append(chunk)
+    return labels
+
+
+def outline_target(session, heading, cells=None):
+    """Pick the rail label from actual cells, independently of its current width."""
+    cells = cells if cells is not None else session.cells()
+    labels = outline_labels(cells)
+    session.check(len(labels) == 1, "One visible outline rail label")
+    label = labels[0]
+    chunks = [chunk for chunk in find_cells(cells, heading)
+              if chunk[0]["y"] > label[0]["y"]
+              and max(0, label[0]["x"] - 3) <= chunk[0]["x"] <= label[-1]["x"] + 4]
+    session.check(len(chunks) == 1, "Unambiguous outline heading: " + heading)
+    return chunks[0]
+
+
+def private_use(char):
+    return any(0xE000 <= ord(c) <= 0xF8FF or 0xF0000 <= ord(c) <= 0xFFFFD
+               or 0x100000 <= ord(c) <= 0x10FFFD for c in char)
+
+
+def contrast_ratio(foreground, background):
+    def luminance(color):
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return None
+        values = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in values]
+        return sum(v * weight for v, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+    front, back = luminance(foreground), luminance(background)
+    if front is None or back is None:
+        return 0
+    return (max(front, back) + 0.05) / (min(front, back) + 0.05)
+
+
+def chrome(session):
+    """Accept the quiet one-row workspace using real cells and source transactions."""
+    source = session.original_source
+    name = session.fixture.name
+    title = source.splitlines()[0].removeprefix("# ")
+    nerd = "--icons" in session.app_args and session.app_args[session.app_args.index("--icons") + 1] == "nerd"
+
+    def saved_exact(message):
+        session.key("Ctrl+s")
+        session.check(session.fixture.read_bytes() == session.original_bytes, message)
+
+    def idle(label, expect_outline=None, first_line=False):
+        state, cells = session.capture(label)
+        filenames = list(find_cells(cells, name))
+        wordmarks = list(find_cells(cells, "marklane", casefold=True))
+        session.check(len(filenames) == 1, "Idle filename appears exactly once: " + label,
+                      filename=name, occurrences=len(filenames))
+        header_y = filenames[0][0]["y"]
+        if state["cols"] >= 80:
+            session.check(len(wordmarks) == 1 and wordmarks[0][0]["y"] == header_y,
+                          "Wordmark and unique tab filename share one header row: " + label)
+        if wordmarks:
+            session.check(len(wordmarks) == 1 and wordmarks[0][-1]["x"] < filenames[0][0]["x"],
+                          "Wordmark is separate from the document tab: " + label)
+        if state["cols"] < 48:
+            session.check(not wordmarks, "Compact header gives filename space priority: " + label)
+        session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9|Ctrl[+-][A-Za-z])\b", state["text"]),
+                      "Idle chrome has no document list, Live label, or persistent shortcut labels: " + label)
+        if expect_outline is not None:
+            session.check(bool(outline_labels(cells)) == expect_outline,
+                          "Outline visibility follows available width: " + label)
+        if first_line:
+            headings = list(find_cells(cells, title))
+            session.check(bool(headings), "First document heading is visible: " + label)
+            body = max(headings, key=lambda chunk: chunk[0]["x"])
+            session.check(body[0]["y"] == header_y + 1,
+                          "Document begins immediately below the single header: " + label,
+                          header_row=header_y, body_row=body[0]["y"])
+        session.check(any(private_use(c["char"]) for c in cells) == nerd,
+                      "Nerd icons are opt-in and plain mode emits no private-use glyphs: " + label,
+                      expected_icons="nerd" if nerd else "plain")
+        color_samples = [("active filename", filenames[0])]
+        if wordmarks:
+            color_samples.append(("wordmark", wordmarks[0]))
+        for part, chunk in color_samples:
+            ratios = [contrast_ratio(c["fg"], c["bg"]) for c in chunk]
+            session.check(min(ratios) >= 3, f"Readable explicit {part} colors: {label}", minimum_contrast=min(ratios))
+        header_backgrounds = {c["bg"] for c in cells if c["y"] == header_y and c["char"].strip()}
+        if state["cols"] >= 80:
+            session.check(len(header_backgrounds) >= 2, "Header segments use distinct backgrounds: " + label)
+            positions = list(find_cells(cells, "Ln "))
+            session.check(len(positions) == 1, "Cursor position remains visible in statusline: " + label)
+            position = positions[0]
+            session.check(position[0]["y"] > header_y, "Position belongs to the footer: " + label)
+            backgrounds = {c["bg"] for c in cells if c["y"] == position[0]["y"]}
+            session.check(len(backgrounds) >= 2, "Statusline segments use distinct backgrounds: " + label)
+        return state, cells
+
+    session.key("Ctrl+Home")
+    idle("01-single-header-160x45", expect_outline=True, first_line=True)
+    for width, height in [(120, 36), (80, 24), (42, 16)]:
+        session.call("resize", width, height)
+        idle(f"02-single-header-{width}x{height}", expect_outline=width >= 110, first_line=True)
+    session.call("resize", 160, 45)
+    session.key("F9")
+    session.key("Home")
+    session.key("Down")
+    session.key("Enter")
+    alpha_line = source.splitlines().index("## Section Alpha") + 1
+    session.check(f"Ln {alpha_line}, Col 1" in session.state()["text"],
+                  "Outline Home/Down selects the second heading with no document entries ahead of it")
+    saved_exact("Keyboard outline navigation preserves every source byte")
+    session.key("F9")
+    session.call("type", "ignored")
+    session.key("Escape")
+    saved_exact("Typing while outline has focus cannot modify the document")
+    cells = session.cells()
+    target = outline_target(session, "Final Section", cells)[1]
+    session.call("mouse", "click", target["x"], target["y"])
+    session.settle()
+    final_line = source.splitlines().index("## Final Section") + 1
+    session.check(f"Ln {final_line}, Col 1" in session.state()["text"],
+                  "Outline pointer jumps to the exact offscreen source heading")
+    session.capture("03-outline-pointer-focus")
+    saved_exact("Pointer outline navigation preserves exact source")
+
+    session.key("Ctrl+g")
+    session.call("type", "3")
+    session.key("Enter")
+    session.key("Ctrl+Shift+Right")
+    session.check(any(c["inverse"] for c in session.cells()), "Document selection is visible before theme changes")
+    catalog = ROOT / "third_party/iterm2-themes/palettes.json"
+    if not catalog.exists():
+        catalog = Path(__file__).with_name("palettes.json")
+    palettes = {theme["name"]: theme for theme in json.loads(catalog.read_text())["themes"]}
+    for index, theme in enumerate(["Sage Dark", "Sage Light", "Dracula", "Catppuccin Latte", "Nord"]):
+        session.key("F2")
+        session.call("type", "theme")
+        session.key("Enter")
+        session.call("type", theme)
+        session.key("Enter")
+        state, cells = idle(f"04-theme-{index + 1:02d}", expect_outline=True)
+        if theme in palettes:
+            background = next(c["bg"] for c in cells if (c["x"], c["y"]) == (state["cols"] - 1, 3))
+            session.check(background.lower() == palettes[theme]["background"].lower(),
+                          f"{theme} retains its upstream document background alongside new chrome")
+        session.check(any(c["inverse"] for c in cells), f"{theme} preserves the existing source selection")
+    session.paste("REPLACED")
+    session.key("Ctrl+s")
+    session.check(session.fixture.read_bytes() == source.replace("Keep", "REPLACED", 1).encode(),
+                  "Theme selection preserves the exact selected source range")
+    session.key("Ctrl+z")
+    saved_exact("One undo after theme changes restores the original source bytes")
+
+    for number in range(2, 10):
+        session.key("Ctrl+n")
+        session.call("type", f"Tab{number}")
+    active_name = "Untitled 9.md"
+    for width, height in [(160, 45), (120, 36), (80, 24), (42, 16)]:
+        session.call("resize", width, height)
+        state, cells = session.capture(f"05-tab-overflow-{width}x{height}")
+        labels = list(find_cells(cells, active_name))
+        session.check(len(labels) == 1 and "Tab9" in state["text"],
+                      f"Active document remains visible once during tab overflow at {width} columns")
+        active = labels[0]
+        dirty = [c for c in cells if c["y"] == active[0]["y"]
+                 and active[0]["x"] - 4 <= c["x"] <= active[-1]["x"] + 3 and c["char"] == "*"]
+        session.check(bool(dirty), f"Active dirty marker survives tab overflow at {width} columns")
+        session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9)\b", state["text"]),
+                      f"Tab overflow does not introduce repeated chrome hints at {width} columns")
+    session.key("F7")
+    session.check("Untitled 8.md" in session.state()["text"] and "Tab8" in session.state()["text"],
+                  "Previous tab remains independently editable during overflow")
+    session.key("F8")
+    session.call("resize", 20, 10)
+    state, cells = session.capture("06-compact-dirty-tab-20x10")
+    session.check("Tab9" in state["text"] and any(c["char"] == "*" for c in cells),
+                  "Compact header preserves the current buffer and its dirty marker")
+    session.call("resize", 160, 45)
+    for _ in range(8):
+        session.key("Ctrl+w")
+        session.call("expect", "text", "Unsaved document", "--timeout", 3000)
+        session.key("n")
+    session.key("Ctrl+Home")
+    saved_exact("Closing overflow tabs never changes the original document")
+    idle("07-final-single-header", expect_outline=True, first_line=True)
+    session.check(not any(c["png_error"] for c in session.captures),
+                  "Chrome and optional Nerd Font captures all export as native PNGs")
 
 
 def reliability(session):
@@ -398,28 +592,32 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="enhanced")
-    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability"], default="all")
+    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
     parser.add_argument("--theme", choices=["dark", "light"],
                         help="Editor theme; omitted for compatibility with older binaries")
+    parser.add_argument("--icons", choices=["plain", "nerd"], help="Editor icon mode; omitted for older binaries")
+    parser.add_argument("--font", default="JetBrains Mono", help="Preferred tui-test recording font family")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(__file__, args.output / "scenario.py")
     shutil.copyfile(HELPER, args.output / "session.py")
-    for fixture in ["acceptance.md", "screenshots.md", "writing.md"]:
+    for fixture in ["acceptance.md", "screenshots.md", "writing.md", "chrome.md"]:
         shutil.copyfile(Path(__file__).with_name(fixture), args.output / fixture)
     shutil.copyfile(ROOT / "third_party/iterm2-themes/palettes.json" if (ROOT / "third_party/iterm2-themes/palettes.json").exists() else Path(__file__).with_name("palettes.json"), args.output / "palettes.json")
     write_json(args.output / "invocation.json", vars(args) | {"output": str(args.output.resolve())})
-    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability"] if args.suite == "all" else [args.suite]
+    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome"] if args.suite == "all" else [args.suite]
     for suite in suites:
-        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md"}.get(suite, "screenshots.md")
+        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md", "chrome": "chrome.md"}.get(suite, "screenshots.md")
         app_args = ["--theme", args.theme] if args.theme else []
+        if args.icons:
+            app_args.extend(["--icons", args.icons])
         session = Session(args.tool, args.binary, args.output / suite,
                           Path(__file__).with_name(fixture), args.palette,
-                          size=(160, 45) if suite in ("workspace", "themes", "reliability") else (80, 24), app_args=app_args)
+                          size=(160, 45) if suite in ("workspace", "themes", "reliability", "chrome") else (80, 24), app_args=app_args, font=args.font)
         try:
             session.start()
-            title = "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
+            title = "Chrome acceptance" if suite == "chrome" else "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
             session.call("expect", "text", title, "--timeout", 3000)
             if suite == "captures":
                 captures(session)
@@ -431,6 +629,8 @@ def main():
                 themes(session)
             elif suite == "reliability":
                 reliability(session)
+            elif suite == "chrome":
+                chrome(session)
             else:
                 unicode_and_edits(session)
             session.key("Escape")
