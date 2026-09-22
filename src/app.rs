@@ -110,6 +110,13 @@ impl App {
         self.file.as_ref().map(|file| file.path.as_path())
     }
 
+    pub(crate) fn has_modal(&self) -> bool {
+        matches!(
+            self.overlay,
+            Overlay::Help | Overlay::SaveAs { .. } | Overlay::Quit
+        )
+    }
+
     pub(crate) fn workspace_commands_allowed(&self) -> bool {
         !matches!(self.overlay, Overlay::SaveAs { .. } | Overlay::Quit)
     }
@@ -994,6 +1001,7 @@ impl App {
         let area = area.intersection(frame.area());
         if self.editor_area != area {
             self.dragging = false;
+            self.field_drag = None;
             self.search_geometry = SearchGeometry::default();
         }
         self.editor_area = area;
@@ -1099,6 +1107,46 @@ impl App {
             .take(height)
             .enumerate()
         {
+            let visual_row = self.scroll + screen_row;
+            // Level labels live entirely in the prose margin and never become
+            // editable text or part of the source hit map.
+            if self.live && self.viewport.x.saturating_sub(area.x) >= 4 {
+                for block in &self.parsed.snapshot.blocks {
+                    if let marklane::BlockKind::Heading(level) = block.kind
+                        && self.projection.cursor(block.range.start).0 == visual_row
+                    {
+                        frame.render_widget(
+                            Paragraph::new(format!("h{level}"))
+                                .style(document_style().fg(palette().muted)),
+                            Rect::new(
+                                self.viewport.x - 3,
+                                self.viewport.y + screen_row as u16,
+                                2,
+                                1,
+                            ),
+                        );
+                    }
+                }
+            }
+            // Fenced/indented code keeps its literal text and alignment while
+            // the row-wide inset distinguishes it from surrounding prose.
+            if self.live
+                && self.parsed.snapshot.blocks.iter().any(|block| {
+                    block.kind == marklane::BlockKind::Code
+                        && block.range.start <= row.start
+                        && row.start < block.range.end
+                })
+            {
+                frame.render_widget(
+                    Block::default().style(document_style().bg(palette().code_background)),
+                    Rect::new(
+                        self.viewport.x,
+                        self.viewport.y + screen_row as u16,
+                        self.viewport.width,
+                        1,
+                    ),
+                );
+            }
             for glyph in &row.glyphs {
                 let selected =
                     glyph.source.start < selection.end && selection.start < glyph.source.end;
@@ -1436,7 +1484,7 @@ impl App {
         }
     }
 
-    fn draw_overlay(&self, frame: &mut Frame) {
+    pub(crate) fn draw_overlay(&self, frame: &mut Frame) {
         let (title, body) = match &self.overlay {
             Overlay::None | Overlay::Search { .. } => return,
             Overlay::Help => (" Marklane · Help ", "Type normally. Shift+arrows or drag selects source.\nHome/End: visual row · Ctrl+Home/End: document\nCtrl+S: save · F4 / Ctrl+Shift+S: Save As (new filename)\nCtrl+E / F6: live/source · Ctrl+Z / Ctrl+Y: undo/redo\nCtrl+A: select all · Ctrl+C/X/V: system copy/cut/paste\nClipboard errors or SSH use internal fallback, shown in status.\nTerminal paste is literal and undoable.\nCtrl+F: find · Ctrl+R: replace · F3 / Shift+F3: next/previous\nSearch: Tab/Shift+Tab switches Find/With; Esc closes.\nFind is literal and case sensitive. Enter: next; With Enter: one.\nAlt+R/A: replace one/all.\nEnter continues lists · Alt+Enter: literal newline\nCtrl+T: toggle task · Ctrl+Q: quit all tabs safely\nCtrl+N: new · Ctrl+O: open · Ctrl+W: close tab\nF7/F8 or Ctrl+PageUp/PageDown: previous/next tab\nF2 / Ctrl+P: commands · F9: focus/hide sidebar\nLive view reveals active source. UTF-8 files up to 8 MiB.\nDisk conflicts require Save As. No clipboard polling or OSC52.\nPress Esc, Enter, or F1 to close.".to_string()),
@@ -3156,5 +3204,195 @@ mod tests {
         );
         assert_eq!(app.document.text(), source);
         assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn editor_slice_contains_search_cursor_and_document_clicks() {
+        let text = "intro\n\n- [ ] task cat\n\ncat cat";
+        let mut app = App::new(text.into(), None, true);
+        let area = Rect::new(26, 0, 94, 36);
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        let render = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(
+                        Block::default().style(Style::default().bg(Color::Magenta)),
+                        frame.area(),
+                    );
+                    app.draw_in(frame, area, true);
+                })
+                .unwrap();
+        };
+        render(&mut app, &mut terminal);
+        assert_eq!(app.viewport.width, 88);
+        assert_eq!(app.viewport.x, 29);
+        assert_eq!(terminal.backend().buffer()[(25, 20)].bg, Color::Magenta);
+        assert_eq!(
+            terminal.backend().buffer()[(26, 20)].bg,
+            palette().background
+        );
+        click(&mut app, text.find('[').unwrap(), true);
+        assert!(app.document.text().contains("[x]"));
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        search(&mut app, "cat", true);
+        render(&mut app, &mut terminal);
+        for field in &app.search_geometry.fields {
+            assert_eq!(field.area.intersection(area), field.area);
+        }
+        for button in &app.search_geometry.buttons {
+            assert_eq!(button.area.intersection(area), button.area);
+        }
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert!(app.search_geometry.fields[0].area.contains(cursor));
+        assert_eq!(terminal.backend().buffer()[(25, 35)].bg, Color::Magenta);
+        click_button(&mut app, SearchAction::Next);
+        assert_eq!(
+            app.document.selection().range(),
+            text.rfind("cat cat").unwrap()..text.rfind("cat cat").unwrap() + 3
+        );
+        assert_eq!(app.document.text(), text);
+    }
+
+    #[test]
+    fn source_jump_clears_transient_state_and_follows_a_grapheme_boundary() {
+        let text = format!("intro\n{}界e\u{301} target", "line\n".repeat(60));
+        let mut app = App::new(text.clone(), None, true);
+        search(&mut app, "line", true);
+        app.preferred_column = Some(12);
+        app.dragging = true;
+        app.anchor_screen_row = Some(3);
+        let target = text.find('界').unwrap();
+        app.jump_to_source(target + 1);
+        draw(&mut app, 80, 24);
+        assert_eq!(app.document.selection(), Selection::caret(target));
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(app.search.query.text().is_empty());
+        assert!(!app.dragging);
+        assert!(app.preferred_column.is_none());
+        assert!(app.anchor_screen_row.is_none());
+        assert!(app.caret_position().0 >= app.scroll);
+        assert!(app.caret_position().0 < app.scroll + usize::from(app.viewport.height));
+        app.jump_to_source(usize::MAX);
+        assert_eq!(app.document.selection(), Selection::caret(text.len()));
+        assert_eq!(app.document.text(), text);
+        assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn theme_switch_rebuilds_markdown_without_touching_selection_or_history() {
+        let text = "intro\n\n# Heading\n\nA [link](target) and `code`.";
+        let mut app = App::new(text.into(), None, true);
+        app.document
+            .set_selection(Selection { anchor: 3, head: 1 })
+            .unwrap();
+        let selection = app.document.selection();
+        for theme in [Theme::Light, Theme::Dark] {
+            app.set_theme(theme);
+            let terminal = draw(&mut app, 120, 36);
+            assert_eq!(
+                terminal.backend().buffer()[(0, 20)].bg,
+                theme.palette().background
+            );
+            assert_eq!(
+                source_cell(&app, &terminal, text.find("Heading").unwrap()).fg,
+                theme.palette().heading
+            );
+            assert_eq!(
+                source_cell(&app, &terminal, text.find("link").unwrap()).fg,
+                theme.palette().link
+            );
+            assert_eq!(
+                source_cell(&app, &terminal, text.find("code").unwrap()).fg,
+                theme.palette().code
+            );
+            assert_eq!(app.document.selection(), selection);
+            assert_eq!(app.document.text(), text);
+            assert!(!app.document.can_undo());
+        }
+    }
+
+    #[test]
+    fn offset_slice_survives_tiny_layouts_and_ignores_other_panes_wheel() {
+        for width in [0, 1, 2, 8, 12, 42, 94, 134] {
+            for height in [0, 1, 2, 4, 8, 24, 45] {
+                let mut app = App::new("first\ncat cat\n".repeat(20), None, true);
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width + 26, height.max(1))).unwrap();
+                let area = Rect::new(26, 0, width, height);
+                for replace in [false, true] {
+                    search(&mut app, "cat", replace);
+                    terminal
+                        .draw(|frame| app.draw_in(frame, area, true))
+                        .unwrap();
+                    let geometry = &app.search_geometry;
+                    for field in &geometry.fields {
+                        assert_eq!(field.area.intersection(area), field.area);
+                    }
+                    for button in &geometry.buttons {
+                        assert_eq!(button.area.intersection(area), button.area);
+                    }
+                }
+                app.deactivate();
+                let scroll = app.scroll;
+                app.handle_event(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 10,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                }));
+                assert_eq!(app.scroll, scroll);
+            }
+        }
+    }
+
+    #[test]
+    fn command_line_open_uses_browser_text_and_size_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.md");
+        std::fs::write(&path, "before\0after").unwrap();
+        assert!(
+            matches!(App::open(Some(path)), Err(error) if error.kind() == io::ErrorKind::InvalidData)
+        );
+        let path = dir.path().join("large.md");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(
+            matches!(App::open(Some(path)), Err(error) if error.to_string().contains("8") || error.to_string().contains("limit"))
+        );
+        assert!(App::open(None).unwrap().is_markdown());
+        let path = dir.path().join("plain.txt");
+        std::fs::write(&path, "text\r\n").unwrap();
+        let app = App::open(Some(path)).unwrap();
+        assert!(!app.is_markdown());
+        assert_eq!(app.document.text(), "text\r\n");
+    }
+
+    #[test]
+    fn modal_overlay_can_be_redrawn_above_workspace_chrome() {
+        let mut app = App::new("source".into(), None, true);
+        assert!(!app.has_modal());
+        search(&mut app, "source", false);
+        assert!(!app.has_modal());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        assert!(app.has_modal());
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        terminal
+            .draw(|frame| {
+                app.draw_in(frame, Rect::new(26, 0, 94, 36), false);
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(Color::Magenta)),
+                    Rect::new(0, 0, 26, 36),
+                );
+                app.draw_overlay(frame);
+            })
+            .unwrap();
+        // The modal straddles the sidebar boundary and must win at that cell.
+        assert_eq!(terminal.backend().buffer()[(23, 9)].bg, palette().chrome);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        assert!(app.has_modal());
     }
 }

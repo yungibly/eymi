@@ -74,7 +74,7 @@ impl Theme {
             Self::Light => Palette {
                 background: Color::Rgb(248, 246, 237),
                 foreground: Color::Rgb(53, 62, 49),
-                muted: Color::Rgb(107, 117, 99),
+                muted: Color::Rgb(105, 115, 97),
                 chrome: Color::Rgb(233, 237, 223),
                 chrome_text: Color::Rgb(52, 65, 48),
                 chrome_muted: Color::Rgb(94, 110, 86),
@@ -104,4 +104,52 @@ pub fn palette() -> Palette {
 pub fn document_style() -> Style {
     let colors = palette();
     Style::default().fg(colors.foreground).bg(colors.background)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn luminance(color: Color) -> f64 {
+        let Color::Rgb(r, g, b) = color else {
+            panic!("theme colors must be explicit RGB")
+        };
+        let linear = |byte| {
+            let channel = f64::from(byte) / 255.0;
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    }
+
+    #[test]
+    fn both_palettes_pair_readable_text_and_distinct_surfaces() {
+        for theme in [Theme::Dark, Theme::Light] {
+            let p = theme.palette();
+            for (name, text, background) in [
+                ("body", p.foreground, p.background),
+                ("muted", p.muted, p.background),
+                ("heading", p.heading, p.background),
+                ("link", p.link, p.background),
+                ("quote", p.quote, p.background),
+                ("code", p.code, p.code_background),
+                ("chrome", p.chrome_text, p.chrome),
+                ("chrome muted", p.chrome_muted, p.chrome),
+                ("active tab", p.accent, p.active),
+                ("warning", p.warning, p.chrome),
+                ("match", p.search_text, p.search),
+                ("active match", p.search_active_text, p.search_active),
+            ] {
+                let a = luminance(text);
+                let b = luminance(background);
+                let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(contrast >= 4.5, "{theme:?} {name}: {contrast:.2}");
+            }
+            assert_ne!(p.chrome, p.background);
+            assert_ne!(p.search, p.search_active);
+        }
+    }
 }

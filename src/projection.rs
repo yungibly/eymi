@@ -327,6 +327,7 @@ impl Projection {
         let mut offset = 0;
         let mut decoration_index = 0;
         let mut column = 0;
+        let mut word_start = true;
         while offset < source.len() {
             while decorations
                 .get(decoration_index)
@@ -357,6 +358,7 @@ impl Projection {
                     end,
                 });
                 column = 0;
+                word_start = true;
                 result.positions.insert(end, (result.rows.len() - 1, 0));
                 continue;
             }
@@ -370,6 +372,7 @@ impl Projection {
                 result.rows.last_mut().unwrap().end = end;
                 continue;
             }
+            let whitespace = displayed.chars().all(char::is_whitespace);
             let is_tab = displayed == "\t";
             if is_tab {
                 displayed = " ".repeat((4 - column % 4).min(limit));
@@ -384,7 +387,31 @@ impl Projection {
                 displayed = "�".into();
                 glyph_width = 1;
             }
-            if column + glyph_width > limit {
+            // Move a complete prose word to the next row when it fits there.
+            // Keep every source whitespace glyph, including trailing spaces.
+            // Source view and code/table blocks retain literal column wrapping.
+            let prose = live
+                && word_start
+                && !whitespace
+                && !parsed.snapshot.blocks.iter().any(|block| {
+                    matches!(block.kind, BlockKind::Code | BlockKind::Table)
+                        && contains(&block.range, start)
+                });
+            let wrap_word = prose
+                && column > 0
+                && result
+                    .rows
+                    .last()
+                    .unwrap()
+                    .glyphs
+                    .iter()
+                    .any(|glyph| !glyph.text.chars().all(char::is_whitespace))
+                && {
+                    let word_width = glyph_width
+                        + following_word_width(source, end, &decorations, decoration_index, limit);
+                    word_width <= limit && column + word_width > limit
+                };
+            if wrap_word || column + glyph_width > limit {
                 result.rows.push(VisualRow {
                     glyphs: Vec::new(),
                     start,
@@ -418,6 +445,7 @@ impl Projection {
             });
             result.rows.last_mut().unwrap().end = end;
             column += glyph_width;
+            word_start = whitespace;
             result
                 .positions
                 .insert(end, (result.rows.len() - 1, column));
@@ -515,6 +543,44 @@ impl Projection {
         }
         parsed.snapshot.tasks.get(target.task?)
     }
+}
+
+/// Bounded lookahead is used only once per word. Concealed Markdown syntax
+/// contributes no columns; rendered task/bullet replacements count normally.
+fn following_word_width(
+    source: &str,
+    mut offset: usize,
+    decorations: &[&Decoration],
+    mut index: usize,
+    limit: usize,
+) -> usize {
+    let mut width = 0;
+    while offset < source.len() && width <= limit {
+        while decorations
+            .get(index)
+            .is_some_and(|d| d.range.start < offset)
+        {
+            index += 1;
+        }
+        let text =
+            if let Some(decoration) = decorations.get(index).filter(|d| d.range.start == offset) {
+                offset = decoration.range.end;
+                index += 1;
+                decoration.replacement.as_str()
+            } else {
+                let grapheme = source[offset..].graphemes(true).next().unwrap();
+                offset += grapheme.len();
+                grapheme
+            };
+        if text.is_empty() {
+            continue;
+        }
+        if text.chars().any(char::is_whitespace) {
+            break;
+        }
+        width += UnicodeWidthStr::width(safe_text(text).as_str()).max(1);
+    }
+    width
 }
 
 pub fn safe_text(text: &str) -> String {
@@ -714,5 +780,71 @@ mod tests {
             p.pointer_task(&parsed, 2, 3, 80).is_none(),
             "shared padding stays a text hit"
         );
+    }
+
+    #[test]
+    fn prose_wraps_whole_words_and_retains_source_whitespace() {
+        let text = "alpha beta gamma delta";
+        let projected = project(text, 0, 13, true);
+        assert_eq!(display(&projected), "alpha beta \ngamma delta");
+        assert_eq!(
+            projected
+                .rows
+                .iter()
+                .flat_map(|row| &row.glyphs)
+                .map(|glyph| glyph.text.as_str())
+                .collect::<String>(),
+            text
+        );
+        let boundary = text.find("gamma").unwrap();
+        assert_eq!(projected.cursor(boundary), (1, 0));
+        assert_eq!(
+            projected.cursor_with_affinity(boundary, Affinity::Upstream),
+            (0, 11)
+        );
+        assert_eq!(projected.hit(0, 11).offset, boundary);
+        assert_eq!(projected.hit(1, 0).offset, boundary);
+        // Literal source and code preserve their column-based layout.
+        assert_eq!(
+            display(&project(text, 0, 13, false)),
+            "alpha beta g\namma delta"
+        );
+        let code = format!("```\n{text}\n```\n");
+        assert!(display(&project(&code, 0, 13, true)).contains("alpha beta g\namma delta"));
+    }
+
+    #[test]
+    fn word_wrap_handles_hidden_markers_wide_text_tabs_and_unbroken_words() {
+        let text = "intro\n\nalpha **beta** gamma [delta](somewhere) e\u{301}clair 界面\tlast abcdefghijklmnop";
+        let boundaries: Vec<_> = text
+            .grapheme_indices(true)
+            .map(|(offset, _)| offset)
+            .chain([text.len()])
+            .collect();
+        for width in 2..30 {
+            for caret in [0, text.find("beta").unwrap(), text.len()] {
+                let projected = project(text, caret, width, true);
+                for (row_number, row) in projected.rows.iter().enumerate() {
+                    for col in 0..width + 2 {
+                        assert!(boundaries.contains(&projected.hit(row_number, col).offset));
+                    }
+                    for glyph in &row.glyphs {
+                        assert!(boundaries.contains(&glyph.source.start));
+                        assert!(boundaries.contains(&glyph.source.end));
+                        assert!(glyph.column + glyph.width < width);
+                        assert_eq!(
+                            projected.cursor(glyph.source.start),
+                            (row_number, glyph.column)
+                        );
+                        assert_eq!(
+                            projected.hit(row_number, glyph.column).offset,
+                            glyph.source.start
+                        );
+                    }
+                }
+            }
+        }
+        let rendered = display(&project("intro\n\nalpha **beta** gamma", 0, 13, true));
+        assert!(rendered.contains("alpha beta \ngamma"));
     }
 }
