@@ -130,6 +130,27 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- **Public release `v0.1.0`**, September 22, 2026, ships commit `306dd12`.
+  [CI](https://github.com/yungibly/eymi/actions/runs/35737489994) passes all four
+  Linux/macOS × stable/1.89 jobs. The
+  [native release workflow](https://github.com/yungibly/eymi/actions/runs/35737769797)
+  passes on Apple Silicon, Intel macOS, and Linux x86_64, including the 307 Rust
+  tests, 19 package/Homebrew regressions, attribution checks, optimized builds,
+  and extracted-archive version/help/theme/snapshot smoke tests. The three
+  uploaded archives and their exact contents/checksums were independently
+  verified before publication.
+- [Homebrew verification](https://github.com/yungibly/eymi/actions/runs/35738337830)
+  downloads the published archives anonymously, passes `brew install` and
+  `brew test` on macOS arm64, macOS Intel, and Linux x86_64, then updates the tap.
+  The live `Formula/eymi.rb` matches the locally generated, checked formula
+  byte-for-byte. Install with `brew install yungibly/tap/eymi`.
+- Release dependency notice bundles cover 70 macOS or 68 Linux locked packages.
+  An independent audit compared every bundled notice with its crate source or
+  checksum-pinned override. macOS binaries report deployment target 11.0;
+  the GNU/Linux binary was built and tested on Ubuntu 22.04. Native older-macOS
+  and additional Linux distribution coverage remain outside these runs.
+  [Release assets and SHA256SUMS](https://github.com/yungibly/eymi/releases/tag/v0.1.0)
+  are the authoritative distributed bytes.
 - Eymi feature and rename checkpoint, September 22, 2026: **307 tests** pass
   on macOS with both Rust 1.89.0 and Rust 1.98.0 (69 core, 227 app/helpers,
   6 CLI, 5 real-process PTY). Formatting, strict all-target Clippy, whitespace

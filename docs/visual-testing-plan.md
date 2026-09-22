@@ -1,5 +1,18 @@
 # Visual testing and a quieter interface
 
+## September 22 Eymi release checkpoint
+
+The renamed Eymi executable adds a clickable new-document button, fuzzy
+document/heading navigation, and source-preserving line move/duplicate commands.
+The new workflows suite passes 77 assertions with 16 PNGs; the final chrome
+suite adds 168 assertions and 16 PNGs. Compact and wide captures were inspected
+with no export failures in these simplified fixtures. Paths and executable
+hashes are in the [verification record](prototype-checks.md#verification-record).
+
+Earlier checkpoints below retain the name Marklane where it identifies the
+executable that was actually tested. The known combining/ZWJ, native clipboard,
+and IME limits remain separate from release CI and Homebrew package checks.
+
 ## September 22 UI polish checkpoint
 
 The header is one tab row; filenames and commands are no longer repeated in
