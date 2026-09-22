@@ -1,0 +1,200 @@
+name: Release archives
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (must match Cargo.toml)
+        required: true
+        type: string
+      create_draft:
+        description: Create a draft release after all archive checks pass
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Validate existing tag, Cargo version, and license inputs
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 tools/release/package.py validate --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          commit="$(git rev-parse HEAD)"
+          test "$commit" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    name: Native ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install Rust and verify native architecture
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.0
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$RELEASE_TARGET"
+      - name: Check the exact release commit
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          python3 tools/import-themes.py --check --self-test
+          python3 -m unittest discover -s tools/release -p 'test_*.py'
+      - name: Build the native release binary and its dependency notices
+        run: |
+          cargo build --locked --release --target "$RELEASE_TARGET"
+          python3 tools/release/notices.py --target "$RELEASE_TARGET" --output "$RUNNER_TEMP/rust-notices"
+      - name: Package without overwriting assets
+        run: |
+          python3 tools/release/package.py pack --tag "$RELEASE_TAG" --target "$RELEASE_TARGET" \
+            --binary "target/$RELEASE_TARGET/release/eymi" --notices "$RUNNER_TEMP/rust-notices" \
+            --output-dir dist --epoch "$(git show -s --format=%ct HEAD)"
+      - name: Smoke-test the extracted final package
+        run: |
+          unpack="$RUNNER_TEMP/eymi-package-smoke"
+          mkdir "$unpack"
+          tar -xzf "dist/eymi-$RELEASE_VERSION-$RELEASE_TARGET.tar.gz" -C "$unpack"
+          test "$("$unpack/eymi" --version)" = "eymi $RELEASE_VERSION"
+          "$unpack/eymi" --help > "$RUNNER_TEMP/eymi-help.txt"
+          "$unpack/eymi" --list-themes > "$RUNNER_TEMP/eymi-themes.txt"
+          test -s "$RUNNER_TEMP/eymi-themes.txt"
+          printf '# Package smoke\n\nOriginal Markdown bytes.\n' > "$unpack/smoke.md"
+          cp "$unpack/smoke.md" "$RUNNER_TEMP/eymi-smoke-original.md"
+          "$unpack/eymi" --snapshot --snapshot-size 80x24 --theme dark "$unpack/smoke.md" > "$RUNNER_TEMP/eymi-snapshot.txt"
+          grep -q 'Package smoke' "$RUNNER_TEMP/eymi-snapshot.txt"
+          cmp "$unpack/smoke.md" "$RUNNER_TEMP/eymi-smoke-original.md"
+          file "$unpack/eymi"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            ldd "$unpack/eymi"
+            readelf --version-info "$unpack/eymi" | grep 'GLIBC_'
+          else
+            otool -L "$unpack/eymi"
+            xcrun vtool -show-build "$unpack/eymi"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      - name: Require all three archives and verify final checksums and notices
+        run: |
+          python3 tools/release/package.py checksums --directory dist --tag "$RELEASE_TAG"
+          python3 tools/release/package.py verify --directory dist --tag "$RELEASE_TAG"
+          cat dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    if: github.event_name == 'push' || inputs.create_draft
+    needs: [validate, assemble]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+      - name: Verify downloaded assets again
+        run: python3 tools/release/package.py verify --directory dist --tag "$RELEASE_TAG"
+      - name: Create a draft without replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'A release already exists; inspect it rather than overwriting reviewed assets.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS \
+            --draft --verify-tag --title "Eymi $RELEASE_TAG" --generate-notes
