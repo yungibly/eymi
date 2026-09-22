@@ -34,9 +34,11 @@ pub(super) enum Command {
     Indent,
     Outdent,
     Theme,
+    Reload,
+    Recover,
 }
 impl Command {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 24] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -59,6 +61,8 @@ impl Command {
         Self::Indent,
         Self::Outdent,
         Self::Theme,
+        Self::Reload,
+        Self::Recover,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -83,7 +87,9 @@ impl Command {
             Self::InlineCode => "Format inline code",
             Self::Indent => "Indent selected lines",
             Self::Outdent => "Outdent selected lines",
-            Self::Theme => "Toggle light / dark theme",
+            Self::Theme => "Choose theme…",
+            Self::Reload => "Reload file from disk",
+            Self::Recover => "Recover documents…",
         }
     }
     pub fn shortcut(self) -> &'static str {
@@ -110,6 +116,8 @@ impl Command {
             Self::Indent => "Ctrl+]",
             Self::Outdent => "Ctrl+[",
             Self::Theme => "",
+            Self::Reload => "F5",
+            Self::Recover => "",
         }
     }
 }

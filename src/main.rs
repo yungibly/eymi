@@ -4,8 +4,10 @@ mod cli;
 mod clipboard;
 mod file_io;
 mod projection;
+mod recovery;
 mod search;
 mod search_highlight;
+mod settings;
 mod simulation;
 mod terminal;
 mod theme;
@@ -30,12 +32,15 @@ fn run() -> io::Result<()> {
             println!("marklane {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        cli::Action::ListThemes => {
+            for theme in theme::Theme::all() {
+                println!("{}\t{}", theme.id(), theme.name());
+            }
+            return Ok(());
+        }
         cli::Action::Edit(options) => options,
     };
-    theme::set_theme(match options.theme {
-        cli::ThemeChoice::Dark => theme::Theme::Dark,
-        cli::ThemeChoice::Light => theme::Theme::Light,
-    });
+    theme::set_theme(options.theme.unwrap_or_default());
     let mut app = workspace::Workspace::open(options.path)?;
     if options.source {
         app.editor_mut().live = false;
@@ -53,5 +58,11 @@ fn run() -> io::Result<()> {
         ));
     }
     app.enable_system_clipboard();
+    if !options.no_state {
+        match settings::directories() {
+            Ok((config, state)) => app.enable_state(&config, &state, options.theme.is_some()),
+            Err(error) => app.editor_mut().set_message(error.to_string()),
+        }
+    }
     terminal::run(&mut app)
 }

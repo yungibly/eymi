@@ -61,6 +61,9 @@ class Session:
         # The execution shell commonly sets NO_COLOR=1 and TERM=dumb.
         self.env.pop("NO_COLOR", None)
         self.env.update(TUI_TEST_HOME=str(self.runtime), TERM="xterm-256color",
+                        XDG_CONFIG_HOME=str(self.runtime / "config"),
+                        XDG_STATE_HOME=str(self.runtime / "state"),
+                        SSH_CONNECTION="marklane-visual-test",
                         COLORTERM="truecolor", TUI_TEST_RECORDING_FONT_FAMILIES="JetBrains Mono")
         colors = {"dark": ("#171a21", "#d6dce8"), "light": ("#f5f3ed", "#242932")}
         background, foreground = colors[palette]

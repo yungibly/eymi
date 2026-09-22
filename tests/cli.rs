@@ -74,3 +74,43 @@ fn invalid_snapshot_options_fail_without_creating_the_target() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("WIDTHxHEIGHT"));
     assert!(!path.exists());
 }
+
+#[test]
+fn builtin_theme_catalog_and_named_snapshots_are_state_free() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    let state = directory.path().join("state");
+    let output = binary()
+        .arg("--list-themes")
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.lines().count() > 600);
+    for name in [
+        "Catppuccin Mocha",
+        "Dracula",
+        "Nord",
+        "Gruvbox Dark",
+        "TokyoNight",
+    ] {
+        assert!(text.contains(name), "{name}");
+    }
+    for name in ["Catppuccin Mocha", "nord", "one-dark", "solarized-light"] {
+        let output = binary()
+            .args(["--snapshot", "--theme", name])
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!config.exists());
+    assert!(!state.exists());
+}

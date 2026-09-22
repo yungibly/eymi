@@ -60,6 +60,10 @@ struct Session {
 
 impl Session {
     fn start(source: &str) -> Self {
+        Self::start_with_state(source, None)
+    }
+
+    fn start_with_state(source: &str, state: Option<&std::path::Path>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let fixture = directory.path().join("protocol.md");
         fs::write(&fixture, source).unwrap();
@@ -109,6 +113,13 @@ impl Session {
             "marklane-protocol",
             env!("CARGO_BIN_EXE_marklane"),
         ]);
+        if let Some(state) = state {
+            command
+                .env("XDG_CONFIG_HOME", state.join("config"))
+                .env("XDG_STATE_HOME", state.join("state"));
+        } else {
+            command.arg("--no-state");
+        }
         command
             .arg(&fixture)
             .env("TERM", "xterm-ghostty")
@@ -178,12 +189,16 @@ impl Session {
             assert!(
                 Instant::now() < deadline,
                 "Timed out waiting for {description}; transcript: {:?}",
-                self.transcript
+                String::from_utf8_lossy(
+                    &self.transcript[self.transcript.len().saturating_sub(4000)..]
+                )
             );
             assert!(
                 self.child.try_wait().unwrap().is_none(),
                 "Child exited before {description}; transcript: {:?}",
-                self.transcript
+                String::from_utf8_lossy(
+                    &self.transcript[self.transcript.len().saturating_sub(4000)..]
+                )
             );
             thread::sleep(Duration::from_millis(5));
         }
@@ -235,7 +250,9 @@ impl Session {
             assert!(
                 Instant::now() < deadline,
                 "Child did not exit: {:?}",
-                self.transcript
+                String::from_utf8_lossy(
+                    &self.transcript[self.transcript.len().saturating_sub(4000)..]
+                )
             );
             thread::sleep(Duration::from_millis(5));
         }
@@ -336,4 +353,81 @@ fn word_selection_formatting_indentation_and_typing_undo_reach_the_core() {
     session.send(b"\x1b[122;5u");
     session.save_and_expect(source);
     session.finish();
+}
+
+#[test]
+fn crash_recovery_and_saved_themes_survive_a_real_process_restart() {
+    let state = tempfile::tempdir().unwrap();
+    let mut crashed = Session::start_with_state("disk baseline\n", Some(state.path()));
+    // Apply a familiar built-in theme through both searchable pickers.
+    crashed.send(b"\x10theme\r");
+    crashed.until("theme picker", |s| count(&s.transcript, b"Preview") > 0);
+    crashed.send(b"\x1b[200~Catppuccin Mocha\x1b[201~\r");
+    let settings = state.path().join("config/marklane/settings.conf");
+    crashed.until("persisted theme", |_| {
+        fs::read_to_string(&settings).is_ok_and(|text| text.contains("theme=catppuccin-mocha"))
+    });
+    crashed.send("\x1b[200~unsaved 界\n\x1b[201~".as_bytes());
+    let recovery = state.path().join("state/marklane/recovery");
+    crashed.until("durable recovery checkpoint", |_| {
+        fs::read_dir(&recovery).is_ok_and(|sessions| {
+            sessions.filter_map(Result::ok).any(|entry| {
+                fs::read_dir(entry.path()).is_ok_and(|files| {
+                    files.filter_map(Result::ok).any(|file| {
+                        if file.path().extension().is_none_or(|ext| ext != "snapshot") {
+                            return false;
+                        }
+                        fs::read(file.path()).is_ok_and(|bytes| {
+                            bytes
+                                .windows("unsaved 界".len())
+                                .any(|window| window == "unsaved 界".as_bytes())
+                        })
+                    })
+                })
+            })
+        })
+    });
+    // Abruptly terminate the entire isolated PTY process group. No clean-exit
+    // code runs, and the source file was never saved.
+    unsafe {
+        libc::kill(-(crashed.child.id() as i32), libc::SIGKILL);
+    }
+    crashed.child.wait().unwrap();
+    assert_eq!(
+        fs::read_to_string(&crashed.fixture).unwrap(),
+        "disk baseline\n"
+    );
+    fs::write(&crashed.fixture, "newer disk contents\n").unwrap();
+    let mut restored = Session::start_with_state("another document\n", Some(state.path()));
+    restored.until("recovery notice", |s| {
+        count(&s.transcript, b"recoverable") > 0
+    });
+    restored.send(b"\x10recover\r");
+    restored.until("recovery picker", |s| {
+        count(&s.transcript, b"recover copy") > 0
+    });
+    restored.send(b"\r");
+    restored.until("recovered tab", |s| {
+        count(&s.transcript, b"as an unsaved copy.") > 0
+    });
+    let saved = state.path().join("recovered.md");
+    restored.send(SAVE);
+    restored.until("save as", |s| {
+        count(&s.transcript, b"Save As") + count(&s.transcript, b"Save as") > 0
+    });
+    restored.send(b"\x01");
+    restored.send(format!("\x1b[200~{}\x1b[201~\r", saved.display()).as_bytes());
+    restored.until("saved recovered copy", |_| {
+        fs::read_to_string(&saved).is_ok_and(|text| text == "unsaved 界\ndisk baseline\n")
+    });
+    assert_eq!(
+        fs::read_to_string(&crashed.fixture).unwrap(),
+        "newer disk contents\n"
+    );
+    restored.finish();
+    assert!(
+        fs::read_to_string(settings)
+            .unwrap()
+            .contains("theme=catppuccin-mocha")
+    );
 }

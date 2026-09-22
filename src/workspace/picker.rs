@@ -1,0 +1,308 @@
+//! Searchable choices with geometry-gated acceptance and a separate query document.
+use super::{chrome_active, chrome_muted, chrome_style, clipped};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use marklane::Document;
+use ratatui::{
+    Frame,
+    layout::Rect,
+    widgets::{Block, Borders, Clear, Paragraph},
+};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+pub(super) enum Action {
+    None,
+    Cancel,
+    Quit,
+    Preview(usize),
+    Accept(usize),
+}
+
+pub(super) struct Picker {
+    query: Document,
+    entries: Vec<(String, String)>,
+    selected: usize,
+    title: &'static str,
+    footer: &'static str,
+    ready: bool,
+    hits: Vec<(Rect, usize)>,
+}
+impl Picker {
+    pub fn new(
+        title: &'static str,
+        footer: &'static str,
+        entries: Vec<(String, String)>,
+        selected: usize,
+    ) -> Self {
+        Self {
+            query: Document::new(""),
+            entries,
+            selected,
+            title,
+            footer,
+            ready: false,
+            hits: vec![],
+        }
+    }
+    fn matches(&self) -> Vec<usize> {
+        let query = self.query.text().to_lowercase();
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (name, hint))| {
+                let name = format!("{name} {hint}").to_lowercase();
+                query
+                    .split_whitespace()
+                    .all(|token| name.contains(token))
+                    .then_some(index)
+            })
+            .collect()
+    }
+    pub fn invalidate(&mut self) {
+        self.ready = false;
+        self.hits.clear();
+    }
+    pub fn handle(&mut self, event: Event) -> Action {
+        let previous = self.matches().get(self.selected).copied();
+        let revision = self.query.revision();
+        match event {
+            Event::Resize(..) => self.invalidate(),
+            Event::Paste(text) => self.insert_query(&text),
+            Event::Key(key) => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                match key.code {
+                    KeyCode::Esc => return Action::Cancel,
+                    KeyCode::Char('q') if ctrl => return Action::Quit,
+                    KeyCode::Char('a') if ctrl => self.query.select_all(),
+                    KeyCode::Char('u') if ctrl => {
+                        self.query.select_all();
+                        self.query.insert("");
+                    }
+                    KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+                    KeyCode::Down => {
+                        self.selected =
+                            (self.selected + 1).min(self.matches().len().saturating_sub(1))
+                    }
+                    KeyCode::PageUp => self.selected = self.selected.saturating_sub(10),
+                    KeyCode::PageDown => {
+                        self.selected =
+                            (self.selected + 10).min(self.matches().len().saturating_sub(1))
+                    }
+                    KeyCode::Enter if self.ready => {
+                        if let Some(index) = self.matches().get(self.selected) {
+                            return Action::Accept(*index);
+                        }
+                    }
+                    KeyCode::Left => self.query.move_left(shift),
+                    KeyCode::Right => self.query.move_right(shift),
+                    KeyCode::Home => {
+                        self.query.set_caret(0).expect("query start");
+                    }
+                    KeyCode::End => {
+                        self.query
+                            .set_caret(self.query.text().len())
+                            .expect("query end");
+                    }
+                    KeyCode::Backspace => {
+                        self.query.backspace();
+                    }
+                    KeyCode::Delete => {
+                        self.query.delete_forward();
+                    }
+                    KeyCode::Char(c)
+                        if !ctrl
+                            && !key.modifiers.contains(KeyModifiers::ALT)
+                            && !c.is_control() =>
+                    {
+                        self.insert_query(&c.to_string());
+                    }
+                    _ => {}
+                }
+            }
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) if self.ready => {
+                    if let Some((_, index)) = self
+                        .hits
+                        .iter()
+                        .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                    {
+                        return Action::Accept(*index);
+                    }
+                }
+                MouseEventKind::ScrollUp => self.selected = self.selected.saturating_sub(3),
+                MouseEventKind::ScrollDown => {
+                    self.selected = (self.selected + 3).min(self.matches().len().saturating_sub(1))
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        if self.query.revision() != revision {
+            self.selected = 0;
+            self.invalidate();
+        }
+        let current = self.matches().get(self.selected).copied();
+        if current != previous {
+            self.invalidate();
+            if let Some(index) = current {
+                return Action::Preview(index);
+            }
+        }
+        Action::None
+    }
+    fn insert_query(&mut self, text: &str) {
+        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+        let remaining = 1024usize
+            .saturating_sub(self.query.text().len() - self.query.selection().range().len());
+        let mut end = 0;
+        for grapheme in clean.graphemes(true) {
+            if end + grapheme.len() > remaining {
+                break;
+            }
+            end += grapheme.len();
+        }
+        if end > 0 {
+            self.query.insert(&clean[..end]);
+        }
+    }
+    pub fn draw(&mut self, frame: &mut Frame) {
+        self.invalidate();
+        let area = frame.area();
+        if area.width < 24 || area.height < 7 {
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new("Resize to choose\nEsc: cancel").style(chrome_style()),
+                area,
+            );
+            return;
+        }
+        let width = area.width.saturating_sub(4).clamp(24, 76).min(area.width);
+        let max_height = area.height.saturating_sub(2).clamp(7, 20).min(area.height);
+        let matches = self.matches();
+        self.selected = self.selected.min(matches.len().saturating_sub(1));
+        let height = (matches.len() as u16 + 5).clamp(7, max_height);
+        let rect = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - max_height) / 3,
+            width,
+            height,
+        );
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} · {} ", self.title, matches.len()))
+                .style(chrome_style()),
+            rect,
+        );
+        let field = Rect::new(rect.x + 2, rect.y + 1, width - 4, 1);
+        frame.render_widget(Block::default().style(chrome_muted()), field);
+        let caret = self.query.selection().head;
+        let mut start = 0;
+        while UnicodeWidthStr::width(&self.query.text()[start..caret]) >= usize::from(field.width) {
+            let Some(grapheme) = self.query.text()[start..caret].graphemes(true).next() else {
+                break;
+            };
+            start += grapheme.len();
+        }
+        if self.query.text().is_empty() {
+            frame.render_widget(
+                Paragraph::new("Type to filter…").style(chrome_muted()),
+                field,
+            );
+        } else {
+            let selection = self.query.selection().range();
+            let mut column = field.x;
+            for (index, grapheme) in self.query.text()[start..].grapheme_indices(true) {
+                let cells = UnicodeWidthStr::width(grapheme) as u16;
+                if column + cells > field.right() {
+                    break;
+                }
+                let selected = start + index < selection.end
+                    && selection.start < start + index + grapheme.len();
+                frame.buffer_mut().set_string(
+                    column,
+                    field.y,
+                    grapheme,
+                    if selected {
+                        chrome_active()
+                    } else {
+                        chrome_muted()
+                    },
+                );
+                column += cells;
+            }
+        }
+        frame.set_cursor_position((
+            field.x + UnicodeWidthStr::width(&self.query.text()[start..caret]) as u16,
+            field.y,
+        ));
+        let available = usize::from(height - 5);
+        let first = self.selected.saturating_sub(available.saturating_sub(1));
+        for (row, &index) in matches.iter().skip(first).take(available).enumerate() {
+            let row_rect = Rect::new(rect.x + 1, rect.y + 3 + row as u16, width - 2, 1);
+            let (name, hint) = &self.entries[index];
+            let style = if first + row == self.selected {
+                chrome_active()
+            } else {
+                chrome_muted()
+            };
+            let hint_width = UnicodeWidthStr::width(hint.as_str());
+            let show_hint =
+                row_rect.width as usize > UnicodeWidthStr::width(name.as_str()) + hint_width + 4;
+            let name_width = row_rect.width as usize - if show_hint { hint_width + 3 } else { 1 };
+            frame.render_widget(
+                Paragraph::new(format!(" {}", clipped(name, name_width))).style(style),
+                row_rect,
+            );
+            if show_hint {
+                frame.buffer_mut().set_string(
+                    row_rect.right() - hint_width as u16 - 1,
+                    row_rect.y,
+                    hint,
+                    style,
+                );
+            }
+            self.hits.push((row_rect, index));
+        }
+        if matches.is_empty() {
+            frame.render_widget(
+                Paragraph::new(" No matches").style(chrome_muted()),
+                Rect::new(rect.x + 1, rect.y + 3, width - 2, 1),
+            );
+        }
+        frame.render_widget(
+            Paragraph::new(clipped(
+                if UnicodeWidthStr::width(self.footer) <= (width - 4) as usize {
+                    self.footer
+                } else {
+                    "Enter: OK  Esc: back"
+                },
+                (width - 4) as usize,
+            ))
+            .style(chrome_muted()),
+            Rect::new(rect.x + 2, rect.bottom() - 2, width - 4, 1),
+        );
+        self.ready = !self.hits.is_empty();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_query_can_replace_a_full_selection_without_splitting_graphemes() {
+        let mut picker = Picker::new("Test", "", vec![], 0);
+        picker.insert_query(&"x".repeat(1023));
+        picker.insert_query("界");
+        assert_eq!(picker.query.text().len(), 1023);
+        picker.insert_query("ab");
+        assert_eq!(picker.query.text().len(), 1024);
+        picker.query.select_all();
+        picker.insert_query("\0\r\n");
+        assert!(!picker.query.selection().range().is_empty());
+        picker.insert_query("e\u{301}👩🏽‍💻");
+        assert_eq!(picker.query.text(), "e\u{301}👩🏽‍💻");
+    }
+}

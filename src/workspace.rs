@@ -1,6 +1,11 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
 mod palette;
+mod persistence;
+mod picker;
 mod sidebar;
+#[cfg(test)]
+mod state_tests;
+use crate::theme::{Theme, current_theme};
 use crate::{
     app::{App, chrome_active, chrome_muted, chrome_style},
     browser::{Action as BrowserAction, Browser},
@@ -11,12 +16,15 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use palette::{Action as PaletteAction, Command, Palette};
+use persistence::Persistence;
+use picker::{Action as ChoiceAction, Picker};
 use ratatui::{
     Frame,
     layout::Rect,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use sidebar::{Sidebar, Target};
+use std::time::Instant;
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -30,6 +38,7 @@ struct Tab {
     // Retain the accepted identity while a directory is temporarily unavailable.
     // Resolving another tab must never depend on access to this tab's path.
     identity: Option<PathBuf>,
+    recovered: Option<(String, Option<PathBuf>)>,
 }
 
 impl Tab {
@@ -54,6 +63,15 @@ struct Pending {
     saving: bool,
 }
 
+enum ChoiceMode {
+    Theme { original: Theme, themes: Vec<Theme> },
+    Recovery,
+}
+struct Choice {
+    picker: Picker,
+    mode: ChoiceMode,
+}
+
 pub struct Workspace {
     tabs: Vec<Tab>,
     active: usize,
@@ -64,6 +82,9 @@ pub struct Workspace {
     tab_hits: Vec<(Rect, usize)>,
     sidebar: Sidebar,
     palette: Option<Palette>,
+    choice: Option<Choice>,
+    persistence: Option<Persistence>,
+    last_tick: Instant,
     area: Rect,
     layout_valid: bool,
     pub should_exit: bool,
@@ -77,6 +98,7 @@ impl Workspace {
                 editor: App::open(path)?,
                 number: 1,
                 identity,
+                recovered: None,
             }],
             active: 0,
             next_number: 2,
@@ -86,6 +108,9 @@ impl Workspace {
             tab_hits: vec![],
             sidebar: Sidebar::default(),
             palette: None,
+            choice: None,
+            persistence: None,
+            last_tick: Instant::now(),
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
             should_exit: false,
@@ -122,6 +147,7 @@ impl Workspace {
             editor: App::open(None).expect("empty document"),
             number: self.next_number,
             identity: None,
+            recovered: None,
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
@@ -159,6 +185,7 @@ impl Workspace {
             editor,
             number: self.next_number,
             identity,
+            recovered: None,
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
@@ -188,6 +215,9 @@ impl Workspace {
     }
 
     fn advance(&mut self, accepted: bool) {
+        if accepted && !self.editor().document.is_dirty() {
+            self.clear_recovery(self.tabs[self.active].number);
+        }
         let Some(mut pending) = self.pending.take() else {
             return;
         };
@@ -211,12 +241,14 @@ impl Workspace {
     }
 
     fn close_active(&mut self) {
+        self.clear_recovery(self.tabs[self.active].number);
         self.tabs.remove(self.active);
         if self.tabs.is_empty() {
             self.tabs.push(Tab {
                 editor: App::open(None).expect("empty document"),
                 number: self.next_number,
                 identity: None,
+                recovered: None,
             });
             self.next_number += 1;
         }
@@ -303,6 +335,7 @@ impl Workspace {
             self.sidebar.selected = self.active;
         } else {
             self.sidebar.preference = Some(!visible);
+            self.persist_sidebar();
             self.sidebar.focused = focus && !visible;
             self.layout_valid = false;
         }
@@ -347,16 +380,81 @@ impl Workspace {
             Command::Indent => (KeyCode::Char(']'), KeyModifiers::CONTROL),
             Command::Outdent => (KeyCode::Char('['), KeyModifiers::CONTROL),
             Command::Theme => {
-                use crate::theme::{Theme, current_theme};
-                let next = match current_theme() {
-                    Theme::Dark => Theme::Light,
-                    Theme::Light => Theme::Dark,
-                };
-                self.editor_mut().set_theme(next);
+                self.open_themes();
+                return;
+            }
+            Command::Reload => (KeyCode::F(5), KeyModifiers::NONE),
+            Command::Recover => {
+                self.open_recovery();
                 return;
             }
         };
         self.handle_event(Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    fn open_themes(&mut self) {
+        self.editor_mut().deactivate();
+        let themes: Vec<_> = Theme::all().collect();
+        let original = current_theme();
+        let selected = themes
+            .iter()
+            .position(|theme| *theme == original)
+            .unwrap_or(0);
+        let entries = themes
+            .iter()
+            .map(|theme| {
+                (
+                    theme.name().to_owned(),
+                    if theme.is_dark() { "Dark" } else { "Light" }.to_owned(),
+                )
+            })
+            .collect();
+        self.choice = Some(Choice {
+            picker: Picker::new(
+                "Themes",
+                "↑↓ Preview · Enter Apply · Esc Cancel",
+                entries,
+                selected,
+            ),
+            mode: ChoiceMode::Theme { original, themes },
+        });
+        self.tab_hits.clear();
+        self.sidebar.invalidate();
+    }
+
+    fn handle_choice(&mut self, event: Event) {
+        let mut choice = self.choice.take().expect("open picker");
+        match choice.picker.handle(event) {
+            ChoiceAction::Cancel => {
+                if let ChoiceMode::Theme { original, .. } = choice.mode {
+                    self.editor_mut().set_theme(original);
+                }
+            }
+            ChoiceAction::Quit => {
+                if let ChoiceMode::Theme { original, .. } = choice.mode {
+                    self.editor_mut().set_theme(original);
+                }
+                self.request(Intent::Quit);
+            }
+            ChoiceAction::Accept(index) => match choice.mode {
+                ChoiceMode::Theme { themes, .. } => {
+                    if let Some(theme) = themes.get(index) {
+                        self.editor_mut().set_theme(*theme);
+                        self.persist_theme(*theme);
+                    }
+                }
+                ChoiceMode::Recovery => self.recover_document(index),
+            },
+            ChoiceAction::Preview(index) => {
+                if let ChoiceMode::Theme { themes, .. } = &choice.mode
+                    && let Some(theme) = themes.get(index)
+                {
+                    self.editor_mut().set_theme(*theme);
+                }
+                self.choice = Some(choice);
+            }
+            ChoiceAction::None => self.choice = Some(choice),
+        }
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -381,6 +479,10 @@ impl Workspace {
             }
         }
         if matches!(event, Event::Mouse(_)) && !self.layout_valid {
+            return;
+        }
+        if self.choice.is_some() {
+            self.handle_choice(event);
             return;
         }
         if let Some(palette) = &mut self.palette {
@@ -646,6 +748,9 @@ impl Workspace {
             self.tabs[self.active].identity = Some(identity);
             self.tabs[self.active].refresh_identity();
         }
+        if !self.editor().document.is_dirty() {
+            self.clear_recovery(self.tabs[self.active].number);
+        }
     }
 
     fn label(&self, index: usize) -> String {
@@ -671,7 +776,17 @@ impl Workspace {
                     name.to_string_lossy().into_owned()
                 }
             })
-            .unwrap_or_else(|| format!("Untitled {}.md", tab.number));
+            .unwrap_or_else(|| {
+                tab.recovered
+                    .as_ref()
+                    .map(|(label, _)| {
+                        format!(
+                            "Recovered {}",
+                            label.rsplit(['/', '\\']).next().unwrap_or(label)
+                        )
+                    })
+                    .unwrap_or_else(|| format!("Untitled {}.md", tab.number))
+            });
         format!(
             "{}{} ",
             if tab.editor.document.is_dirty() {
@@ -694,6 +809,7 @@ impl Workspace {
         }
         let show_cursor = self.browser.is_none()
             && self.palette.is_none()
+            && self.choice.is_none()
             && !self.sidebar.focused
             && self.pending.as_ref().is_none_or(|p| p.saving);
         let sidebar_width = if sidebar_visible {
@@ -838,6 +954,9 @@ impl Workspace {
         }
         if let Some(palette) = &mut self.palette {
             palette.draw(frame);
+        }
+        if let Some(choice) = &mut self.choice {
+            choice.picker.draw(frame);
         }
     }
 }
@@ -1752,6 +1871,16 @@ mod tests {
         let old_theme = crate::theme::current_theme();
         let before = draw(&mut app, 120, 36).backend().buffer()[(0, 0)].bg;
         palette_query(&mut app, "theme", 120, 36);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_event(Event::Paste(
+            if old_theme.is_dark() {
+                "Sage Light"
+            } else {
+                "Sage Dark"
+            }
+            .into(),
+        ));
+        draw(&mut app, 120, 36);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let rendered = draw(&mut app, 120, 36);
         assert_ne!(rendered.backend().buffer()[(0, 0)].bg, before);

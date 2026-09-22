@@ -1,14 +1,17 @@
+use crate::theme::Theme;
 use std::{ffi::OsString, io, path::PathBuf};
 
 pub const HELP: &str = "Marklane — a source-preserving Markdown editor
 
-Usage: marklane [--theme dark|light] [--source] [FILE]
-       marklane --snapshot [--snapshot-size WIDTHxHEIGHT] [--theme dark|light] [FILE]
+Usage: marklane [--theme NAME] [--source] [FILE]
+       marklane --snapshot [--snapshot-size WIDTHxHEIGHT] [--theme NAME] [FILE]
 
 Without FILE, opens an untitled Markdown document. Use -- before a filename
 that starts with a dash. Files must be UTF-8 text, at most 8 MiB.
 
-  --theme dark|light       Choose the editor palette (default: dark)
+  --theme NAME            Choose a built-in theme (name or ID)
+  --list-themes           List built-in theme IDs and names
+  --no-state              Disable preferences and crash recovery
   --source                Open with Markdown source visible
   --snapshot              Print the real renderer without opening a terminal
   --snapshot-size WxH     Snapshot dimensions (default: 80x24; max: 400x160)
@@ -17,7 +20,7 @@ that starts with a dash. Files must be UTF-8 text, at most 8 MiB.
 
 F2 / Ctrl+P Commands · F9 Outline · F1 Help
 Ctrl+N New · Ctrl+O Open · Ctrl+W Close tab · Ctrl+Q Quit
-Ctrl+S Save · F4 Save As · Ctrl+E / F6 Live/source
+Ctrl+S Save · F4 Save As · F5 Reload · Ctrl+E / F6 Live/source
 F7/F8 or Ctrl+PageUp/PageDown switches tabs.
 Ctrl+F Find · Ctrl+R Replace · F3/Shift+F3 Next/previous match
 Ctrl+Z Undo · Ctrl+Y Redo · Ctrl+C/X/V Copy/cut/paste
@@ -27,19 +30,13 @@ internal fallback on SSH or errors. Existing files changed on disk are
 protected from overwrite; Save As requires a new filename.
 ";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ThemeChoice {
-    #[default]
-    Dark,
-    Light,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct Options {
     pub path: Option<PathBuf>,
     pub snapshot: bool,
     pub source: bool,
-    pub theme: ThemeChoice,
+    pub theme: Option<Theme>,
+    pub no_state: bool,
     pub size: (u16, u16),
 }
 
@@ -48,6 +45,7 @@ pub enum Action {
     Edit(Options),
     Help,
     Version,
+    ListThemes,
 }
 
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action> {
@@ -55,7 +53,8 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
         path: None,
         snapshot: false,
         source: false,
-        theme: ThemeChoice::Dark,
+        theme: None,
+        no_state: false,
         size: (80, 24),
     };
     let mut positional = false;
@@ -66,6 +65,11 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
             match argument.to_str() {
                 Some("--help" | "-h") => return Ok(Action::Help),
                 Some("--version" | "-V") => return Ok(Action::Version),
+                Some("--list-themes") => return Ok(Action::ListThemes),
+                Some("--no-state") => {
+                    options.no_state = true;
+                    continue;
+                }
                 Some("--snapshot") => {
                     options.snapshot = true;
                     continue;
@@ -97,11 +101,9 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
                         .to_str()
                         .ok_or_else(|| invalid("Invalid option value"))?;
                     if flag == "--theme" {
-                        options.theme = match value {
-                            "dark" => ThemeChoice::Dark,
-                            "light" => ThemeChoice::Light,
-                            _ => return Err(invalid("--theme must be dark or light")),
-                        };
+                        options.theme = Some(Theme::from_name(value).ok_or_else(|| {
+                            invalid(format!("Unknown theme {value:?}; use --list-themes"))
+                        })?);
                     } else {
                         options.size = parse_size(value)?;
                         explicit_size = true;
@@ -158,7 +160,8 @@ mod tests {
                 path: None,
                 snapshot: false,
                 source: false,
-                theme: ThemeChoice::Dark,
+                theme: None,
+                no_state: false,
                 size: (80, 24),
             })
         );
@@ -176,7 +179,8 @@ mod tests {
                 path: Some(PathBuf::from("notes.md")),
                 snapshot: true,
                 source: true,
-                theme: ThemeChoice::Light,
+                theme: Some(Theme::Light),
+                no_state: false,
                 size: (160, 45),
             })
         );
@@ -186,7 +190,7 @@ mod tests {
     fn invalid_flags_dimensions_and_values_fail_before_opening_a_file() {
         for values in [
             vec!["--theme"],
-            vec!["--theme", "blue"],
+            vec!["--theme", "no-such-theme-987654321"],
             vec!["--theme="],
             vec!["--snapshot-size", "120x36"],
             vec!["--unknown"],
@@ -221,7 +225,7 @@ mod tests {
             panic!()
         };
         assert_eq!(options.path, Some(PathBuf::from("--theme=light")));
-        assert_eq!(options.theme, ThemeChoice::Dark);
+        assert_eq!(options.theme, None);
     }
 
     #[cfg(unix)]

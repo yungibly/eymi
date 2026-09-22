@@ -2,7 +2,7 @@
 
 The headless harness exercises the application's real input and rendering paths. Real-terminal behavior is a separate manual check because agents cannot operate terminal apps through Computer Use in this environment.
 
-Status: the September 22 everyday-usability checkpoint adds paired themes, a centered writing column, word wrapping, a documents/outline sidebar, command palette, source-line jumps, formatting, word editing, indentation, and bounded grouped undo. The verification record below separates automated evidence from native terminal checks. Earlier user reports cover prior builds; a native Ghostty pass of this checkpoint remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
+Status: the September 22 theme/recovery checkpoint adds 624 built-in themes with live previews and saved preferences, safe external-file reloads, and private crash recovery to the everyday editing and workspace features. The verification record below separates automated evidence from native terminal checks. Earlier user reports cover prior builds; a native Ghostty pass of this checkpoint remains separate. The [visual testing record](visual-testing-plan.md) explains the executable runner and its limits.
 
 ## Automated checks
 
@@ -29,7 +29,7 @@ with `--theme light`. The same sequence works with `--theme dark`.
    and documents/outline sidebar. Click a heading, then use F9 and arrows/Enter
    to navigate by keyboard. Ctrl+G jumps to a source line. Narrow the window to
    80×24 and 42×16; the sidebar should hide and editing remain usable.
-2. Open F2, filter for `theme`, and run the command. Reopen and filter `bold`.
+2. Open F2, filter for `theme`, and run the command. Filter `Catppuccin`, use arrows to preview, Escape to cancel, then reopen and Enter to apply. Reopen F2 and filter `bold`.
    Escape should retain the source selection and return to editing. Filtered
    commands should remain clickable; resizing must not activate stale targets.
 3. Select a word with Ctrl/Alt+Shift+Right. Try Ctrl+B, Alt+I, and Alt+backtick,
@@ -125,6 +125,35 @@ The [runner guide](../tools/tui-test/README.md) gives the separate automated vis
 Include the starting fixture or a minimal text sample, the exact input sequence, the terminal and window dimensions if relevant, and what appeared instead of the expected behavior. A screenshot can help with visual defects, but preserve the Markdown text too so the interaction can become a headless regression test.
 
 ## Verification record
+
+- Theme/recovery checkpoint, September 22, 2026: `cargo test --locked --offline`
+  passes **262 tests** (61 core, 193 app/workspace/helpers, 4 CLI, 4 real PTY).
+  Exact strict all-target Clippy, formatting, whitespace checks, the offline
+  theme-importer reproduction/self-test, and debug/release builds pass on macOS.
+- All 624 palettes pass contrast/lookup/ID checks. New integration regressions
+  cover theme preview/cancel/persistence, read-only/concurrent/oversized settings,
+  invisible choices, recovered empty/Unicode buffers and unusual paths, saved
+  checkpoint cleanup, canceled multi-tab quit, external reload/undo baselines,
+  and headless CLI isolation. A real PTY test kills an unsaved editor, restarts,
+  recovers into a detached tab, saves a copy, and checks the newer original file
+  remains unchanged. Recovery unit tests also exercise competing processes,
+  corrupt/truncated records, bounded scans, locks, and failed atomic updates.
+- Executable UI runs in `target/visual-theme-recovery-dark/` and
+  `target/visual-theme-recovery-light/` pass **75 assertions each**, retaining
+  34 frames per run (31 native PNGs plus the same three known Unicode-fixture
+  failures). `target/visual-imported-themes-final/` adds **25 assertions and 16 PNGs**
+  across Catppuccin Mocha/Latte, Dracula, Nord, Gruvbox Dark, TokyoNight, and
+  iTerm2 Solarized Light, including preview/cancel/apply and tiny-window safety.
+  `target/visual-disk-reload-verified/` adds **7 release-binary assertions and
+  4 PNGs**, verifying disk notices, dirty confirmation, tiny fallback, and exact
+  local text restored by undo. Source byte preservation and actual upstream
+  background colors are checked.
+  These artifacts record the source revision, worktree diff status, executable
+  hash, settings isolation, and exact actions. Total: **182 terminal assertions**.
+- Settings/state directories and clipboard are isolated in automated runs;
+  no test accesses the user's settings or native clipboard. Native IME,
+  clipboard and renderer differences remain a manual compatibility pass.
+
 
 - Everyday usability checkpoint, September 22, 2026: `cargo test --locked
   --offline` passes 206 tests (56 core, 144 app/workspace and helpers, 3 CLI,

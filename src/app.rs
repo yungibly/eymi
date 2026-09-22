@@ -64,6 +64,8 @@ const HELP_LINES: &[&str] = &[
     "Ctrl+A: select all · Ctrl+C/X/V: copy/cut/paste",
     "Ctrl+S: save · F4 / Ctrl+Shift+S: Save As",
     "F5: reload from disk · dirty text needs confirmation",
+    "F2 → Choose theme: preview, apply, and remember colors",
+    "F2 → Recover documents: open an unsaved crash copy",
     "Ctrl+N: new · Ctrl+O: open · Ctrl+W: close tab",
     "F7/F8 or Ctrl+PageUp/PageDown: switch tabs",
     "F2 / Ctrl+P: commands · Ctrl+G: go to source line",
@@ -1776,6 +1778,11 @@ impl App {
             .saturating_sub(2)
             .min(if self.overlay == Overlay::Help { 21 } else { 9 });
         if width < 4 || height < 3 {
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new("Resize for dialog\nEsc: cancel").style(chrome_style()),
+                area,
+            );
             return;
         }
         let popup = Rect::new(
@@ -1797,6 +1804,7 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(chrome_style().fg(palette().border))
+                    .title_style(chrome_style())
                     .title(title),
             ),
             popup,

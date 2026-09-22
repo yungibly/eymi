@@ -2,7 +2,7 @@
 name = "marklane"
 version = "0.1.0"
 edition = "2024"
-description = "A source-preserving terminal Markdown editor prototype"
+description = "A source-preserving terminal Markdown editor"
 
 [dependencies]
 arboard = { version = "3.6", default-features = false }

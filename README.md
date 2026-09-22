@@ -2,7 +2,7 @@
 
 A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
 
-**Status: under active development.** The product and command name is **Marklane** / `marklane`; the repository directory remains `md-term-editor`. Build locally to try the current usability checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
+**Status: under active development.** The product and command name is **Marklane** / `marklane`; the repository directory remains `md-term-editor`. Build locally to try the theme and recovery checkpoint. CI, release packaging, and Homebrew distribution are deferred. The plans distinguish implemented behavior from future work.
 
 The central idea: make a Markdown document pleasant to work in directly, with dependable cursor movement and selection, while preserving the underlying file exactly outside intentional edits.
 
@@ -19,16 +19,25 @@ With a recent Rust toolchain, build and print a headless screen without opening 
 ```sh
 cargo build --locked
 cargo run --locked -- --snapshot tests/ui/demo.md
-cargo run --locked -- --snapshot --snapshot-size 160x45 --theme light tests/ui/visual/writing.md
+cargo run --locked -- --snapshot --snapshot-size 160x45 --theme "Catppuccin Mocha" tests/ui/visual/writing.md
+cargo run --locked -- --list-themes
 ```
 
-To edit a file in your terminal, run `cargo run --locked -- --theme light path/to/note.md`. Dark is the default theme; both use explicit foreground/background pairs. With no filename, Marklane opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
+To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin Mocha" path/to/note.md`. A saved theme is used by default, falling back to Sage Dark. `--theme` overrides the saved preference for that launch. With no filename, Marklane opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
 
 Marklane has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
 
-The writing surface uses a sage palette, a centered live column up to 88 cells wide, and word-aware prose wrapping. Source view uses the available width; code and tables retain source-oriented wrapping. Quiet tab, search, and footer bars separate controls from the document. Find uses one row at 80 columns; Replace adds one more. Narrow windows place actions on a separate row. Routine feedback clears on the next input, while actionable errors remain visible until dismissed or resolved.
+The writing surface uses explicit paired colors, a centered live column up to 88 cells wide, and word-aware prose wrapping. Source view uses the available width; code and tables retain source-oriented wrapping. Quiet tab, search, and footer bars separate controls from the document. Find uses one row at 80 columns; Replace adds one more. Narrow windows place actions on a separate row. Routine feedback clears on the next input, while actionable errors remain visible until dismissed or resolved.
 
 F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes file, search, formatting, history, view, sidebar, and theme actions. Ctrl+G jumps to a source line. A documents/heading sidebar appears automatically at 110 columns and above. Click a heading to jump, or press F9 to focus the sidebar and use arrows/Enter. Escape returns to the editor; F9 while focused hides it. The sidebar hides in small windows and can be shown explicitly when at least 60 columns are available. Headings come from the Markdown parser, so fenced-code examples do not appear as headings.
+
+## Themes and preferences
+
+**624 built-in themes** include Catppuccin, Dracula, Nord, Gruvbox, Solarized, Tokyo Night, One Dark, and many more. Press F2, choose **Choose theme**, and type to filter. Arrow keys preview the highlighted theme throughout the editor; Enter or a visible row click applies and remembers it. Escape cancels the preview. Theme changes preserve source, selection, and undo history.
+
+`marklane --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
+
+Explicit theme and sidebar choices are saved to `$XDG_CONFIG_HOME/marklane/settings.conf`, or `~/.config/marklane/settings.conf`. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
 
 ## Editing controls
 
@@ -61,10 +70,20 @@ On supporting Unix terminals, Marklane requests disambiguated keyboard input so 
 
 Ctrl+C/X/V uses the native clipboard locally, with a reported internal fallback on backend errors or SSH. The terminal's own paste shortcut also accepts external text. Empty paste preserves the selection. Automated clipboard tests use fake backends; the user reports the follow-up build works, without a per-platform compatibility record. Native Wayland and OSC 52 are not implemented.
 
+The active file is checked for external changes about once a second. F5 or **Reload file from disk** loads fresh disk text. Dirty buffers require a visible confirmation; reload is undoable and is refused if the old text cannot fit the history budget. Undo restores local text as dirty against the latest disk baseline. Missing, unreadable, invalid, or oversized files leave the buffer intact.
+
 Save As requires a new path that is not owned by another tab, and a changed disk baseline blocks overwrite. Changed saves to read-only files are rejected. Both command-line and browser opens reject invalid UTF-8, binary NUL bytes, and files over 8 MiB. Disk-baseline checks stream at most the accepted file size plus one byte, so an externally enlarged file does not cause an unbounded allocation. Atomic replacement still cannot exclude a separate writer after the last check.
 
-Unsupported Markdown constructs remain source, including tables. The core still uses bounded whole-document snapshots and is intended for small documents. Crash recovery, file watching/merge, persistent settings, and session restore remain future work. Theme selection applies to the current process and is not saved. Native Wayland/OSC 52, IME, and cross-platform terminal compatibility have not been established by automated tests.
+## Crash recovery
 
-The [verification record](docs/prototype-checks.md#verification-record) records automated tests, build/lint checks, and actual executable captures separately from terminal-specific manual checks. The [local terminal runner](tools/tui-test/README.md) covers compact and wide layouts in both themes, command/outline navigation, source edits, and keyboard protocol behavior. Its known combining-grapheme and emoji rendering limitations remain documented.
+Interactive sessions checkpoint dirty named and untitled documents about once a second. After an interrupted session, a startup notice offers **F2 → Recover documents**. Each chosen copy opens in a new, explicitly unsaved tab—even when its recovered text is empty. Save As chooses a new filename; recovery never overwrites a newer disk version. A recovered tab is durably checkpointed before its old recovery record is consumed.
+
+Private snapshots live in `$XDG_STATE_HOME/marklane/recovery`, or `~/.local/state/marklane/recovery`. Session locks isolate simultaneous editors. Save and confirmed discard remove the corresponding checkpoint; a canceled quit retains the remaining dirty tabs. Corrupt or unreadable records stay on disk with a diagnostic. Ordinary clean shutdown removes only that session's owned snapshots. Recovery is implemented for Unix and tested on macOS; unsupported platforms report that recovery is unavailable while editing remains usable.
+
+Recovery is a safety net with a roughly one-second checkpoint interval, so edits since the last successful checkpoint can be lost. Each snapshot accepts up to 16 MiB; discovery is bounded to 64 records / 64 MiB and 128 state entries, reporting skipped records. Original documents are never written by recovery. `--no-state` disables all preference and recovery storage.
+
+Unsupported Markdown constructs remain source, including tables. The core still uses bounded whole-document history and is intended for small documents. Automatic merging and restoring the complete previous workspace remain future work. Native Wayland/OSC 52, IME, and cross-platform terminal compatibility have not been established by automated tests.
+
+The [verification record](docs/prototype-checks.md#verification-record) records automated tests, build/lint checks, and actual executable captures separately from terminal-specific manual checks. The [local terminal runner](tools/tui-test/README.md) covers compact and wide layouts in light/dark Sage and seven imported palettes, command/outline navigation, source edits, and keyboard protocol behavior. Its known combining-grapheme and emoji rendering limitations remain documented.
 
 The product should be useful with ordinary terminal capabilities. Larger headings and images are optional experiments. Its files remain ordinary Markdown; no account, service, or proprietary document format is required.

@@ -140,11 +140,19 @@ pub fn run(app: &mut App) -> io::Result<()> {
     let mut output = io::stdout();
     guard.state.enter(&mut output, enable_raw_mode)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
+    let mut redraw = true;
     while !app.should_exit {
-        terminal.draw(|frame| app.draw(frame))?;
-        app.handle_event(event::read()?);
+        if redraw {
+            terminal.draw(|frame| app.draw(frame))?;
+        }
+        redraw = false;
+        if event::poll(std::time::Duration::from_millis(200))? {
+            app.handle_event(event::read()?);
+            redraw = true;
+        }
+        redraw |= app.tick();
     }
-    Ok(())
+    app.finish_state()
 }
 
 #[cfg(all(test, unix))]

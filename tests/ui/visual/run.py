@@ -10,6 +10,7 @@ fixture is modified, no OS clipboard keys are used, and no GUI is opened.
 """
 
 import argparse
+import json
 from pathlib import Path
 import re
 import shutil
@@ -247,10 +248,17 @@ def workspace(session):
     session.key("Escape")
     background = next(c["bg"] for c in session.cells() if (c["x"], c["y"]) == (159, 3))
     command("theme")
+    session.call("type", "Sage Light" if "light" not in session.app_args else "Sage Dark")
+    session.settle()
+    session.capture("05-theme-picker-preview")
+    session.key("Enter")
     changed = next(c["bg"] for c in session.cells() if (c["x"], c["y"]) == (159, 3))
     session.check(changed != background, "Theme command changes actual document cell colors")
     session.capture("05-opposite-theme")
     command("theme")
+    session.call("type", "Sage Light" if "light" in session.app_args else "Sage Dark")
+    session.settle()
+    session.key("Enter")
 
     session.key("Ctrl+Shift+Right")
     command("Format bold")
@@ -303,13 +311,94 @@ def workspace(session):
                   "Workspace captures all export as native PNGs")
 
 
+def reliability(session):
+    source = session.original_source
+    external = source + "\nFirst external edit\n"
+    session.fixture.write_text(external)
+    session.call("expect", "text", "Disk file changed", "--timeout", 4000)
+    session.check("F5" in session.state()["text"], "External file changes offer a reload action")
+    session.capture("01-external-change")
+    session.key("F5")
+    session.key("Ctrl+End")
+    session.paste("local draft")
+    local = external + "local draft"
+    newer = source + "\nSecond external edit\n"
+    session.fixture.write_text(newer)
+    session.key("F5")
+    session.check("Replace local edits with disk text?" in session.state()["text"], "Dirty reload requires an explicit confirmation")
+    session.capture("02-dirty-reload")
+    session.call("resize", 20, 4)
+    session.key("y")
+    session.check("Resize" in session.state()["text"], "Tiny reload prompt cannot discard local edits")
+    session.capture("03-tiny-reload")
+    session.call("resize", 80, 24)
+    session.key("n")
+    session.key("F5")
+    session.capture("04-reload-80x24")
+    session.key("y")
+    session.key("Ctrl+z")
+    session.key("Ctrl+s")
+    session.check(session.fixture.read_text() == local, "Undo after confirmed reload restores the exact local draft against the new baseline")
+    # Return the scratch fixture to its initial bytes using an intentional edit.
+    session.key("Ctrl+a")
+    session.paste(source)
+    session.key("Ctrl+s")
+    session.check(session.fixture.read_bytes() == session.original_bytes, "Reload checks finish with the original scratch source")
+    session.check(not any(c["png_error"] for c in session.captures), "All reload-dialog captures export as native PNG")
+
+
+def themes(session):
+    catalog = ROOT / "third_party/iterm2-themes/palettes.json"
+    if not catalog.exists():
+        catalog = Path(__file__).with_name("palettes.json")
+    data = json.loads(catalog.read_text())
+    palettes = {theme["name"]: theme for theme in data["themes"]}
+    names = ["Catppuccin Mocha", "Catppuccin Latte", "Dracula", "Nord", "Gruvbox Dark", "TokyoNight", "iTerm2 Solarized Light"]
+    def background():
+        return next(c["bg"] for c in session.cells() if (c["x"], c["y"]) == (159, 3))
+    for index, name in enumerate(names):
+        before = background()
+        session.key("F2")
+        session.call("type", "theme")
+        session.key("Enter")
+        session.call("type", name)
+        session.settle()
+        expected = palettes[name]["background"].lower()
+        session.check(background().lower() == expected, f"{name} previews the upstream document background")
+        session.capture(f"{index+1:02d}-" + palettes[name]["id"] + "-preview")
+        session.key("Escape")
+        session.check(background() == before, f"Escape from {name} restores the previous theme")
+        session.key("F2")
+        session.call("type", "theme")
+        session.key("Enter")
+        session.call("type", name)
+        session.settle()
+        session.key("Enter")
+        session.check(background().lower() == expected, f"{name} remains applied after accepting")
+        session.capture(f"{index+1:02d}-" + palettes[name]["id"])
+    session.check(session.fixture.read_bytes() == session.original_bytes, "Theme previews and acceptance never change the source")
+    session.key("F2")
+    session.call("type", "theme")
+    session.key("Enter")
+    session.call("type", "Catppuccin")
+    session.call("resize", 42, 16)
+    session.capture("08-picker-42x16")
+    session.call("resize", 20, 4)
+    session.key("Enter")
+    session.check("Resize to choose" in session.state()["text"], "Tiny theme picker cannot accept invisible choices")
+    session.capture("09-picker-20x4")
+    session.call("resize", 160, 45)
+    session.key("Escape")
+    session.check(not any(c["png_error"] for c in session.captures), "Imported-theme captures all export as PNG")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tool", required=True)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="enhanced")
-    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace"], default="all")
+    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
     parser.add_argument("--theme", choices=["dark", "light"],
                         help="Editor theme; omitted for compatibility with older binaries")
@@ -319,17 +408,18 @@ def main():
     shutil.copyfile(HELPER, args.output / "session.py")
     for fixture in ["acceptance.md", "screenshots.md", "writing.md"]:
         shutil.copyfile(Path(__file__).with_name(fixture), args.output / fixture)
+    shutil.copyfile(ROOT / "third_party/iterm2-themes/palettes.json" if (ROOT / "third_party/iterm2-themes/palettes.json").exists() else Path(__file__).with_name("palettes.json"), args.output / "palettes.json")
     write_json(args.output / "invocation.json", vars(args) | {"output": str(args.output.resolve())})
-    suites = ["captures", "protocol", "unicode", "workspace"] if args.suite == "all" else [args.suite]
+    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability"] if args.suite == "all" else [args.suite]
     for suite in suites:
-        fixture = {"unicode": "acceptance.md", "workspace": "writing.md"}.get(suite, "screenshots.md")
+        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md"}.get(suite, "screenshots.md")
         app_args = ["--theme", args.theme] if args.theme else []
         session = Session(args.tool, args.binary, args.output / suite,
                           Path(__file__).with_name(fixture), args.palette,
-                          size=(160, 45) if suite == "workspace" else (80, 24), app_args=app_args)
+                          size=(160, 45) if suite in ("workspace", "themes", "reliability") else (80, 24), app_args=app_args)
         try:
             session.start()
-            title = "A calmer place to write" if suite == "workspace" else "Terminal acceptance"
+            title = "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
             session.call("expect", "text", title, "--timeout", 3000)
             if suite == "captures":
                 captures(session)
@@ -337,6 +427,10 @@ def main():
                 protocol(session, args.keyboard)
             elif suite == "workspace":
                 workspace(session)
+            elif suite == "themes":
+                themes(session)
+            elif suite == "reliability":
+                reliability(session)
             else:
                 unicode_and_edits(session)
             session.key("Escape")

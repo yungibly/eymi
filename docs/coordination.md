@@ -2,6 +2,33 @@
 
 Working product name: **Marklane**. Command and Cargo package/binary name: **`marklane`**.
 
+## Theme library and recovery checkpoint — September 22, 2026
+
+The current work supersedes the historical ownership below. The same three
+agents worked in isolated worktrees; the coordinator integrated their commits
+and owns final state/UI integration, tests, and documentation.
+
+| Owner | Worktree branch | Integrated scope |
+| --- | --- | --- |
+| Editor surface | `codex/theme-library` | 624 themes, contrast-safe editor roles, pinned color import and attribution |
+| Editing core | `codex/external-file-safety` | Advisory disk monitoring, F5 reload with confirmation and undo, explicitly unsaved recovered documents |
+| Workspace/storage | `codex/recovery-storage` | Private locked sessions, atomic checkpoints, bounded validation, safe recovery handoff |
+| Coordinator | `main` | Searchable live-preview theme picker, settings, CLI, polling, recovery workflow, cross-feature regressions, terminal verification |
+
+Shared APIs are `Theme::all/from_name/name/id/is_dark`,
+`App::check_external_change/request_reload/recovered`, and
+`recovery::Store::{open,checkpoint,remove,list_abandoned,consume,finish_clean}`.
+Configuration persists stable theme IDs. Snapshot/help/version/listing paths are
+state-free. A periodic event poll checkpoints dirty tabs and checks the active
+file without interrupting typing groups. Recoveries always create detached,
+unsaved copies; old records are consumed only after durable handoff.
+
+All three changes are integrated. Independent review fixed settings size,
+concurrent-writer/read-only behavior, full-query replacement, control-character
+recovery labels, and immediate checkpoint cleanup during a canceled multi-tab
+quit. CI and Homebrew remain the next separate step; attribution must accompany
+future distributions. See the [verification record](prototype-checks.md#verification-record).
+
 ## Everyday usability checkpoint — September 22, 2026
 
 This checkpoint supersedes the historical assignments below. The user requested

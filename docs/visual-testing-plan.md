@@ -1,5 +1,22 @@
 # Visual testing and a quieter interface
 
+## September 22 theme and recovery checkpoint
+
+The editor now embeds 624 palettes and has a searchable preview picker, saved
+preferences, and a recovery workflow. The actual executable passes 182 terminal
+assertions: 75 each in Sage dark/light 25 across seven imported themes, and 7 release-binary reload assertions.
+Current artifacts are `target/visual-theme-recovery-{dark,light}/` and
+`target/visual-imported-themes-final/`, plus release reload frames in
+`target/visual-disk-reload-verified/`. They retain 88 frames and 82 successful PNGs;
+the six original-Unicode-fixture PNG failures remain reported separately.
+
+Theme checks verify original background RGB values in real terminal cells,
+preview/cancel/accept behavior, unchanged source, and compact/tiny geometry.
+Preferences/recovery use isolated XDG directories and an internal clipboard.
+The real PTY integration suite separately kills/restarts an editor and verifies
+recovery to a new unsaved tab followed by Save As without touching a newer disk
+file. The existing native-terminal and Unicode-renderer limits still apply.
+
 ## September 22 usability checkpoint
 
 The final integrated build at source commit `9ff0c52` uses paired sage light/dark
