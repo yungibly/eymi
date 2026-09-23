@@ -80,7 +80,8 @@ impl IconSet {
             (Self::Nerd, true) => "\u{f0c52}",
         }
     }
-    /// Level markers hang in the margin beside heading bands.
+    /// Level markers hang in the margin beside heading bands. Plain bars
+    /// thin with depth, so hierarchy reads even without color.
     pub fn heading(self, level: usize) -> &'static str {
         const NERD: [&str; 6] = [
             "\u{f0ca1}",
@@ -90,8 +91,9 @@ impl IconSet {
             "\u{f0ca9}",
             "\u{f0cab}",
         ];
+        const PLAIN: [&str; 6] = ["▌", "▍", "▎", "▏", "▏", "▏"];
         match self {
-            Self::Plain => "▌",
+            Self::Plain => PLAIN[level.clamp(1, 6) - 1],
             Self::Nerd => NERD[level.clamp(1, 6) - 1],
         }
     }
