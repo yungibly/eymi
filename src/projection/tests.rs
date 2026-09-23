@@ -245,10 +245,13 @@ fn word_wrap_handles_hidden_markers_wide_text_tabs_and_unbroken_words() {
                         projected.cursor(glyph.source.start),
                         (row_number, glyph.column)
                     );
-                    assert_eq!(
-                        projected.hit(row_number, glyph.column).offset,
-                        glyph.source.start
-                    );
+                    // A space collapsed at a soft wrap occupies no cell.
+                    if glyph.width > 0 {
+                        assert_eq!(
+                            projected.hit(row_number, glyph.column).offset,
+                            glyph.source.start
+                        );
+                    }
                 }
             }
         }
@@ -473,4 +476,41 @@ fn every_layout_of_a_rich_document_keeps_its_source_contracts() {
             }
         }
     }
+}
+
+#[test]
+fn spaces_at_a_soft_wrap_hang_invisibly_instead_of_indenting_the_next_row() {
+    // "alpha beta" fills a row exactly; the following space must not lead.
+    let text = "alpha beta gamma";
+    let p = project(text, text.len(), 11, true);
+    assert_eq!(display(&p), "alpha beta\ngamma");
+    let space = &p.rows[0].glyphs[10];
+    assert_eq!((space.text.as_str(), space.width), ("", 0));
+    assert_eq!(p.rows[1].glyphs[0].text, "g");
+    let boundary = text.find("gamma").unwrap();
+    assert_eq!(p.cursor(boundary), (1, 0));
+    assert_eq!(
+        p.cursor_with_affinity(boundary, Affinity::Upstream),
+        (0, 10)
+    );
+    // Code keeps every space visible and column-wrapped.
+    let code = format!("```\n{text}\n```\n");
+    assert!(display(&project(&code, 0, 11, true)).contains("alpha beta\n gamma"));
+}
+
+#[test]
+fn nested_items_hang_exactly_under_their_text() {
+    let text = "x\n\n2. step\n   - with a nested bullet that wraps around\n";
+    let p = project(text, 0, 30, true);
+    let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+    let first = rows.iter().position(|r| r.contains("with")).unwrap();
+    let text_column = p.rows[first]
+        .glyphs
+        .iter()
+        .find(|g| g.text == "w")
+        .unwrap()
+        .column;
+    let next = &p.rows[first + 1];
+    let continued = next.glyphs.iter().find(|g| !g.source.is_empty()).unwrap();
+    assert_eq!(continued.column, text_column, "{rows:#?}");
 }

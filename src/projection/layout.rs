@@ -262,7 +262,11 @@ impl<'a> Layout<'a> {
             word <= room && self.column + word > self.limit
         };
         let overflow = self.column + width > self.limit && (has_text || self.column > 0);
-        if wrap_word || overflow {
+        // Like a word processor, prose keeps a space that overflows at the end
+        // of its row, invisibly, rather than starting the next row with it.
+        if overflow && whitespace && has_text && !self.context.literal {
+            (displayed, width) = (Cow::Borrowed(""), 0);
+        } else if wrap_word || overflow {
             self.wrap(start);
             if is_tab {
                 (displayed, width) = self.display(atom.text);
