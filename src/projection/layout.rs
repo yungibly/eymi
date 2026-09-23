@@ -232,7 +232,7 @@ impl<'a> Layout<'a> {
 
     /// Display text and width, with tabs and invisible text made safe.
     fn display(&self, text: &'a str) -> (Cow<'a, str>, usize) {
-        let displayed = if text == "	" {
+        let displayed = if text == "\t" {
             Cow::Owned(" ".repeat((4 - self.column % 4).min(self.limit)))
         } else {
             safe(text)
@@ -603,7 +603,7 @@ impl<'a> Layout<'a> {
                     offset = atom.source.end;
                     let (text, width) = if atom.text.is_empty() {
                         (String::new(), 0)
-                    } else if atom.text == "	" {
+                    } else if atom.text == "\t" {
                         (" ".into(), 1)
                     } else {
                         self.display_fixed(atom.text)
