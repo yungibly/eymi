@@ -128,6 +128,9 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
                 _ => {}
             }
         }
+        if argument.is_empty() {
+            return Err(invalid("The file path is empty"));
+        }
         if options.path.replace(PathBuf::from(argument)).is_some() {
             return Err(invalid(
                 "Open one file on the command line; Ctrl+O opens more tabs",
@@ -244,6 +247,8 @@ mod tests {
         };
         assert_eq!(options.path, Some(PathBuf::from("--theme=light")));
         assert_eq!(options.theme, None);
+        assert!(args(&[""]).is_err());
+        assert!(args(&["--", ""]).is_err());
     }
 
     #[cfg(unix)]

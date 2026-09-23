@@ -188,9 +188,33 @@ impl FileState {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        let mut builder = tempfile::Builder::new();
+        // A replacement starts private, then takes the target's permissions.
+        // A new file gets the usual mode after the umask, like other editors.
+        #[cfg(unix)]
+        if metadata.is_none() {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o666));
+        }
+        let mut temporary = builder.tempfile_in(parent).map_err(|error| {
+            if matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+            ) {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Saving writes a new file into the folder, but the folder is read-only. Your edits are intact; use Save As",
+                )
+            } else {
+                error
+            }
+        })?;
         temporary.write_all(text.as_bytes())?;
         if let Some(metadata) = metadata {
+            #[cfg(unix)]
+            keep_owner(temporary.as_file(), &metadata)?;
+            #[cfg(target_os = "macos")]
+            keep_attributes(&self.path, temporary.as_file());
             temporary
                 .as_file()
                 .set_permissions(metadata.permissions())?;
@@ -334,11 +358,14 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
             "Saving through symbolic links or non-regular files is unsupported; use Save As",
         ));
     }
-    if metadata.permissions().readonly() {
-        return Err(io::Error::new(
+    let read_only = || {
+        io::Error::new(
             io::ErrorKind::PermissionDenied,
             "The file is read-only. Your edits are intact; use Save As",
-        ));
+        )
+    };
+    if metadata.permissions().readonly() {
+        return Err(read_only());
     }
     #[cfg(unix)]
     {
@@ -348,8 +375,67 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
                 "This file has hard links; use Save As to avoid breaking them",
             ));
         }
+        // Replacing through a writable folder would bypass the file's own
+        // owner, ACLs, and flags, which write bits alone do not show.
+        may_write(path).map_err(|error| match error.kind() {
+            io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => read_only(),
+            _ => error,
+        })?;
     }
     Ok(Some(metadata))
+}
+
+#[cfg(unix)]
+fn may_write(path: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: `path` is NUL-terminated and outlives the call.
+    let result =
+        unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::W_OK, libc::AT_EACCESS) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// A replacement must not hand someone else's file to this user. Root, as
+/// under sudo, keeps the owner; anyone keeps a group they belong to.
+#[cfg(unix)]
+fn keep_owner(replacement: &fs::File, target: &fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, fchown};
+    let created = replacement.metadata()?;
+    if (created.uid(), created.gid()) == (target.uid(), target.gid()) {
+        return Ok(());
+    }
+    match fchown(replacement, Some(target.uid()), Some(target.gid())) {
+        Ok(()) => Ok(()),
+        Err(_) if created.uid() != target.uid() => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "This file belongs to another user, and saving would make it yours. Your edits are intact; use Save As",
+        )),
+        // Outside the file's group, the copy keeps this user's default group.
+        Err(_) => Ok(()),
+    }
+}
+
+/// Finder tags, ACLs, and other extended attributes belong to the file, so
+/// a replacement copies them when it can. Failing to copy never blocks a save.
+#[cfg(target_os = "macos")]
+fn keep_attributes(target: &Path, replacement: &fs::File) {
+    use std::os::fd::AsRawFd;
+    let Ok(original) = open_regular_file(target) else {
+        return;
+    };
+    // SAFETY: both descriptors stay open for the call, which accepts a null state.
+    unsafe {
+        libc::fcopyfile(
+            original.as_raw_fd(),
+            replacement.as_raw_fd(),
+            std::ptr::null_mut(),
+            libc::COPYFILE_ACL | libc::COPYFILE_XATTR,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -699,6 +785,81 @@ mod tests {
                 0o640
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_needs_write_access_rather_than_any_write_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, "base").unwrap();
+        let (_, mut file) = FileState::open(path.clone()).unwrap();
+        // Its group may write, but not its owner, this user. The folder
+        // alone would still allow replacing it.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o464)).unwrap();
+        let saved = file.save("changes");
+        let bytes = fs::read(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(saved.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(bytes, b"base");
+            file.save("changes").unwrap();
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"changes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacements_keep_their_group_and_new_files_follow_the_umask() {
+        use std::os::unix::fs::{MetadataExt, chown};
+        let dir = tempfile::tempdir().unwrap();
+        let created = dir.path().join("created.md");
+        fs::File::create(&created).unwrap();
+        let path = dir.path().join("note.md");
+        FileState::new_target(path.clone())
+            .unwrap()
+            .save("new")
+            .unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().mode() & 0o7777;
+        assert_eq!(mode(&path), mode(&created));
+        // Another group this user belongs to, if any.
+        let default = fs::metadata(&path).unwrap().gid();
+        let mut groups = vec![0; 256];
+        // SAFETY: the buffer holds as many groups as the call is told.
+        let count = unsafe { libc::getgroups(groups.len() as i32, groups.as_mut_ptr()) };
+        groups.truncate(count.max(0) as usize);
+        let Some(group) = groups.into_iter().find(|group| *group != default) else {
+            return;
+        };
+        chown(&path, None, Some(group)).unwrap();
+        let (_, mut file) = FileState::open(path.clone()).unwrap();
+        file.save("changed").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"changed");
+        assert_eq!(fs::metadata(&path).unwrap().gid(), group);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replacements_keep_extended_attributes() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, "base").unwrap();
+        let xattr = |args: &[&str]| {
+            let output = Command::new("xattr")
+                .args(args)
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        xattr(&["-w", "org.eymi.test", "kept"]);
+        let (_, mut file) = FileState::open(path.clone()).unwrap();
+        file.save("changed").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"changed");
+        assert_eq!(xattr(&["-p", "org.eymi.test"]).trim(), "kept");
     }
 
     #[test]
