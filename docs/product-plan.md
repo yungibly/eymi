@@ -123,6 +123,8 @@ Kitty's OSC 66 protocol supports text scaling and explicit cell occupancy, with 
 
 Experiment with enlarged inactive H1/H2 headings only after ordinary layout is reliable. Test scrolling, clipping, cursor placement, and switching into source. Capability detection must distinguish width support from scaling support and account for multiplexers. Keep this opt-in initially; the default design uses one cell height.
 
+September 22, 2026: deferred. Kitty renders OSC 66, but Ghostty 1.3.1, the current release, only parses it; rendering is tracked in [ghostty-org/ghostty#10333](https://github.com/ghostty-org/ghostty/issues/10333). A renderer would need to probe support with cursor-position reports, reserve the extra rows in layout, and repaint when enlarged headings move, as [glow's implementation](https://github.com/charmbracelet/glow/pull/1029) does. Headings instead show level through tinted bands and margin marks.
+
 ## Familiar controls and discovery
 
 These are proposed defaults, subject to testing in actual terminals. Each important command should also be reachable through a menu or command palette and be rebindable.
