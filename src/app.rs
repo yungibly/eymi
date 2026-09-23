@@ -1474,6 +1474,11 @@ impl App {
         } else {
             None
         };
+        let guides = if digits > 0 {
+            indent_guides(rows, self.scroll, height)
+        } else {
+            None
+        };
         for (screen_row, row) in rows.iter().skip(self.scroll).take(height).enumerate() {
             let y = self.viewport.y + screen_row as u16;
             line = row.line.or(line);
@@ -1532,6 +1537,15 @@ impl App {
                         usize::from(self.viewport.right() - x),
                         style,
                     );
+                }
+            }
+            if let Some((unit, indents)) = &guides {
+                let buffer = frame.buffer_mut();
+                for column in (0..indents[screen_row]).step_by(*unit) {
+                    let x = self.viewport.x + column as u16;
+                    if x < self.viewport.right() && buffer[(x, y)].symbol() == " " {
+                        buffer[(x, y)].set_symbol("│").set_fg(colors.faint);
+                    }
                 }
             }
         }
@@ -2185,6 +2199,42 @@ fn draw_help_cell(frame: &mut Frame, area: Rect, cell: &HelpCell) {
 
 fn body_top(height: u16) -> u16 {
     u16::from(height > 0)
+}
+
+/// Indentation for guides on each visible row, with the document's smallest
+/// indent as the step. Wrapped rows share their line's indent; blank lines
+/// take the indent of the code that follows, so a block's guides run through
+/// its blank lines and stop where it closes.
+fn indent_guides(
+    rows: &[crate::projection::VisualRow],
+    scroll: usize,
+    height: usize,
+) -> Option<(usize, Vec<usize>)> {
+    let leading = |row: &crate::projection::VisualRow| {
+        row.glyphs
+            .iter()
+            .find(|glyph| !glyph.source.is_empty() && !glyph.text.trim().is_empty())
+            .map(|glyph| glyph.column)
+    };
+    let unit = rows
+        .iter()
+        .filter(|row| row.line.is_some())
+        .filter_map(leading)
+        .filter(|indent| *indent > 0)
+        .min()?
+        .clamp(2, 8);
+    // Resolve each row's indent, carrying a line's indent onto its wrapped rows.
+    let resolve = |index: usize| -> Option<usize> {
+        let first = rows[..=index].iter().rposition(|row| row.line.is_some())?;
+        leading(&rows[first])
+    };
+    let end = (scroll + height).min(rows.len());
+    let mut indents: Vec<Option<usize>> = (scroll..end).map(resolve).collect();
+    let mut next = (end..rows.len()).take(200).find_map(resolve).unwrap_or(0);
+    for indent in indents.iter_mut().rev() {
+        next = *indent.get_or_insert(next);
+    }
+    Some((unit, indents.into_iter().map(|i| i.unwrap_or(0)).collect()))
 }
 
 /// Paint a row surface between the text column's margins; labels hanging
@@ -3147,6 +3197,31 @@ mod tests {
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "one\r\ntwo");
         assert_eq!(app.document.selected_text(), "one\r\ntwo");
+    }
+
+    #[test]
+    fn code_views_number_lines_and_draw_guides_only_in_indentation() {
+        let source = "fn main() {\n    if ok {\n\n        run();\n    }\n}\n";
+        let mut app = App::new(source.into(), None, false);
+        app.document.set_caret(source.find("run").unwrap()).unwrap();
+        let terminal = draw(&mut app, 60, 12);
+        let buffer = terminal.backend().buffer();
+        let x = app.viewport.x;
+        let row = |line: u16| app.viewport.y + line;
+        let text = |y: u16| -> String {
+            (x..app.viewport.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        };
+        assert!(text(row(1)).starts_with("│   if ok {"));
+        // A blank line inside a block keeps the guides of the code after it.
+        assert!(text(row(2)).starts_with("│   │"));
+        assert!(text(row(3)).starts_with("│   │   run();"));
+        assert!(text(row(5)).starts_with('}'));
+        assert_eq!(buffer[(x - 2, row(3))].symbol(), "4");
+        assert!(buffer[(x - 2, row(3))].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(x + 10, row(3))].bg, palette().cursorline);
+        assert_eq!(app.document.text(), source);
     }
 
     #[test]
