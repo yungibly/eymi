@@ -2,14 +2,14 @@
 //! concealment, word or column wrapping, hanging indents, and row surfaces.
 //! Rendered tables become grids whose borders and padding carry no source.
 use super::{
-    Fill, FillKind, Glyph, Projection, VisualRow, overlaps,
+    Fill, FillKind, Glyph, Positions, Projection, VisualRow, overlaps,
     parse::{Decoration, Parsed, RAIL, Table, line_end, next_line},
     safe_text,
 };
 use crate::theme::{self, Palette};
 use pulldown_cmark::Alignment;
 use ratatui::style::Style;
-use std::{collections::BTreeMap, ops::Range};
+use std::{borrow::Cow, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -40,7 +40,8 @@ pub(super) fn build(
             active: Vec::new(),
         },
         rows: vec![VisualRow::new(0, Some(1))],
-        positions: BTreeMap::new(),
+        positions: Positions::default(),
+        row_text: false,
         column: 0,
         line: 1,
         word_start: true,
@@ -48,10 +49,10 @@ pub(super) fn build(
         cursors: [0; 4],
     };
     layout.run();
-    layout
-        .positions
-        .entry(source.len())
-        .or_insert((layout.rows.len() - 1, layout.column));
+    if !layout.positions.contains(source.len()) {
+        let end = layout.here();
+        layout.positions.insert(source.len(), end);
+    }
     Projection {
         rows: layout.rows,
         revision: parsed.snapshot.revision,
@@ -109,8 +110,8 @@ impl Sweep<'_> {
     }
 }
 
-struct Atom {
-    text: String,
+struct Atom<'a> {
+    text: &'a str,
     source: Range<usize>,
     style: Option<Style>,
     task: Option<usize>,
@@ -127,7 +128,9 @@ struct Layout<'a> {
     next_decoration: usize,
     sweep: Sweep<'a>,
     rows: Vec<VisualRow>,
-    positions: BTreeMap<usize, (usize, usize)>,
+    positions: Positions,
+    /// Whether the current row holds source text other than whitespace.
+    row_text: bool,
     column: usize,
     line: usize,
     word_start: bool,
@@ -136,7 +139,7 @@ struct Layout<'a> {
     cursors: [usize; 4],
 }
 
-impl Layout<'_> {
+impl<'a> Layout<'a> {
     fn run(&mut self) {
         let source = self.source;
         let mut offset = 0;
@@ -153,12 +156,13 @@ impl Layout<'_> {
             let start = offset;
             offset = atom.source.end;
             self.positions.insert(start, self.here());
-            if matches!(atom.text.as_str(), "\n" | "\r\n" | "\r") {
+            if matches!(atom.text, "\n" | "\r\n" | "\r") {
                 self.anchor_fill(start);
                 self.row().end = start;
                 self.line += 1;
                 self.rows.push(VisualRow::new(offset, Some(self.line)));
                 self.column = 0;
+                self.row_text = false;
                 self.word_start = true;
                 self.positions.insert(offset, self.here());
                 self.begin_line(offset);
@@ -183,7 +187,7 @@ impl Layout<'_> {
     }
 
     /// The next grapheme or decoration at `offset`, in display form.
-    fn atom(&mut self, offset: usize) -> Atom {
+    fn atom(&mut self, offset: usize) -> Atom<'a> {
         while self
             .decorations
             .get(self.next_decoration)
@@ -198,7 +202,7 @@ impl Layout<'_> {
         {
             self.next_decoration += 1;
             return Atom {
-                text: decoration.replacement.clone(),
+                text: decoration.replacement.as_str(),
                 source: decoration.range.clone(),
                 style: decoration.style,
                 task: decoration.task,
@@ -209,14 +213,14 @@ impl Layout<'_> {
             .next()
             .expect("offset is inside the source");
         Atom {
-            text: grapheme.to_string(),
+            text: grapheme,
             source: offset..offset + grapheme.len(),
             style: None,
             task: None,
         }
     }
 
-    fn style(&mut self, atom: &Atom) -> Style {
+    fn style(&mut self, atom: &Atom<'a>) -> Style {
         let base = Style::default()
             .fg(self.colors.foreground)
             .bg(self.colors.background);
@@ -227,32 +231,29 @@ impl Layout<'_> {
     }
 
     /// Display text and width, with tabs and invisible text made safe.
-    fn display(&self, text: &str) -> (String, usize) {
-        let mut displayed = if text == "\t" {
-            " ".repeat((4 - self.column % 4).min(self.limit))
+    fn display(&self, text: &'a str) -> (Cow<'a, str>, usize) {
+        let displayed = if text == "	" {
+            Cow::Owned(" ".repeat((4 - self.column % 4).min(self.limit)))
         } else {
-            safe_text(text)
+            safe(text)
         };
-        if UnicodeWidthStr::width(displayed.as_str()) == 0 {
-            displayed.insert(0, '◌');
+        let width = UnicodeWidthStr::width(displayed.as_ref());
+        if width == 0 {
+            return (Cow::Owned(format!("◌{displayed}")), 1);
         }
-        let width = UnicodeWidthStr::width(displayed.as_str()).max(1);
         if width > self.limit {
-            return ("�".into(), 1);
+            return (Cow::Borrowed("�"), 1);
         }
         (displayed, width)
     }
 
-    fn place(&mut self, atom: Atom) {
+    fn place(&mut self, atom: Atom<'a>) {
         let start = atom.source.start;
         let end = atom.source.end;
         let whitespace = atom.text.chars().all(char::is_whitespace);
         let is_tab = atom.text == "\t";
-        let (mut displayed, mut width) = self.display(&atom.text);
-        let has_text =
-            self.row().glyphs.iter().any(|glyph| {
-                !glyph.source.is_empty() && !glyph.text.chars().all(char::is_whitespace)
-            });
+        let (mut displayed, mut width) = self.display(atom.text);
+        let has_text = self.row_text;
         // Move a complete prose word to the next row when it fits there. Keep
         // every source whitespace glyph, including trailing spaces.
         let wrap_word = !self.context.literal && self.word_start && !whitespace && has_text && {
@@ -264,7 +265,7 @@ impl Layout<'_> {
         if wrap_word || overflow {
             self.wrap(start);
             if is_tab {
-                (displayed, width) = self.display(&atom.text);
+                (displayed, width) = self.display(atom.text);
             }
         }
         self.anchor_fill(start);
@@ -279,7 +280,7 @@ impl Layout<'_> {
         let column = self.column;
         let row = self.row();
         row.glyphs.push(Glyph {
-            text: displayed,
+            text: displayed.into_owned(),
             source: start..end,
             column,
             width,
@@ -288,6 +289,7 @@ impl Layout<'_> {
         });
         row.end = end;
         self.column += width;
+        self.row_text |= !whitespace;
         self.word_start = whitespace;
         self.positions.insert(end, self.here());
     }
@@ -323,7 +325,8 @@ impl Layout<'_> {
             if text.chars().any(char::is_whitespace) {
                 break;
             }
-            width += UnicodeWidthStr::width(safe_text(text).as_str()).max(1);
+            // Control characters display as one-cell symbols.
+            width += UnicodeWidthStr::width(text).max(1);
         }
         width
     }
@@ -392,6 +395,7 @@ impl Layout<'_> {
         }
         self.rows.push(row);
         self.column = width;
+        self.row_text = false;
     }
 
     /// Apply this line's pending surface once layout reaches its construct.
@@ -595,13 +599,10 @@ impl Layout<'_> {
                     offset = atom.source.end;
                     let (text, width) = if atom.text.is_empty() {
                         (String::new(), 0)
+                    } else if atom.text == "	" {
+                        (" ".into(), 1)
                     } else {
-                        let text = if atom.text == "\t" {
-                            " ".into()
-                        } else {
-                            atom.text.clone()
-                        };
-                        self.display_fixed(&text)
+                        self.display_fixed(atom.text)
                     };
                     let style = self.style(&atom);
                     atoms.push(CellAtom {
@@ -674,6 +675,7 @@ impl Layout<'_> {
                 next.end = row.line.end;
                 self.rows.push(next);
                 self.column = 0;
+                self.row_text = false;
                 if visual == 0 {
                     self.positions.insert(row.line.start, self.here());
                 }
@@ -744,6 +746,7 @@ impl Layout<'_> {
         if end < self.source.len() || self.source[..end].ends_with(['\n', '\r']) {
             self.rows.push(VisualRow::new(end, Some(self.line)));
             self.column = 0;
+            self.row_text = false;
             self.word_start = true;
             self.positions.insert(end, self.here());
             self.begin_line(end);
@@ -942,6 +945,21 @@ fn wrap_cell(atoms: Vec<CellAtom>, width: usize) -> Vec<Vec<CellAtom>> {
         }
     }
     lines
+}
+
+/// `safe_text` without allocating for the common, already-safe case.
+fn safe(text: &str) -> Cow<'_, str> {
+    let unsafe_char = |c: char| {
+        matches!(
+            c,
+            '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+    };
+    if text.chars().any(unsafe_char) {
+        Cow::Owned(safe_text(text))
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 #[cfg(test)]

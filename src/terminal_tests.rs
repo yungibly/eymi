@@ -7,6 +7,8 @@ const PUSH: &[u8] = b"\x1b[>1u";
 const POP: &[u8] = b"\x1b[<1u";
 const LEAVE: &[u8] = b"\x1b[?1049l";
 const DISABLE_PASTE: &[u8] = b"\x1b[?2004l";
+const BAR: &[u8] = b"\x1b[6 q";
+const DEFAULT_SHAPE: &[u8] = b"\x1b[0 q";
 
 fn position(output: &[u8], sequence: &[u8]) -> usize {
     output
@@ -79,6 +81,12 @@ fn cleanup_is_ordered_and_claimed_once() {
     assert_eq!(count(&output, POP), 1);
     assert_eq!(count(&output, LEAVE), 1);
     assert_eq!(restored.get(), 1);
+    // The insertion bar is requested last and the user's shape restored
+    // before the alternate screen closes.
+    assert!(position(&output, PUSH) < position(&output, BAR));
+    assert!(position(&output, BAR) < position(&output, DISABLE_PASTE));
+    assert!(position(&output, DEFAULT_SHAPE) < position(&output, LEAVE));
+    assert_eq!(count(&output, DEFAULT_SHAPE), 1);
 }
 
 #[test]

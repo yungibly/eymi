@@ -48,6 +48,29 @@ def find_cells(cells, word, casefold=False):
                 yield chunk
 
 
+def selection_visible(before, after):
+    """A selection is visible when text cells gain a background of their own."""
+    old = {(c["x"], c["y"]): c["bg"] for c in before}
+    return any(c["y"] > 0 and c["char"].strip() and old.get((c["x"], c["y"])) != c["bg"]
+               for c in after)
+
+
+def highlighted(cells, word, page):
+    """Every cell of the visible word sits on a surface other than the page."""
+    return any(all(c["bg"].lower() != page.lower() for c in chunk) for chunk in find_cells(cells, word))
+
+
+def click_button(session, word):
+    """Click a search panel button; the footer may repeat its label as guidance."""
+    cells = session.cells()
+    footer = max(c["y"] for c in cells)
+    chunks = [chunk for chunk in find_cells(cells, word) if chunk[0]["y"] < footer]
+    session.check(len(chunks) == 1, "Unambiguous visible button: " + word)
+    c = chunks[0][len(word) // 2]
+    session.call("mouse", "click", c["x"], c["y"])
+    session.settle()
+
+
 def click_word(session, word):
     chunks = list(find_cells(session.cells(), word))
     session.check(len(chunks) == 1, "Unambiguous visible click target: " + word)
@@ -96,9 +119,9 @@ def captures(session):
     expect_match(session, 1, "Typed query is visible")
     check_matches(session)
     session.capture("03-find-80x24")
-    click_word(session, "[Next]")
+    click_button(session, "Next")
     expect_match(session, 2, "Rendered Next control advances")
-    click_word(session, "[Prev]")
+    click_button(session, "Prev")
     expect_match(session, 1, "Rendered Prev control goes backward")
     session.key("Ctrl+r")
     session.capture("04-replace-80x24")
@@ -119,10 +142,11 @@ def captures(session):
     session.key("Escape")
     session.key("Ctrl+Home")
     session.call("resize", 80, 24)
+    before = session.cells()
     session.key("Shift+Right")
     session.key("Shift+Right")
     _, cells = session.capture("10-source-selection-80x24")
-    session.check(any(c["inverse"] and c["y"] > 0 for c in cells), "Source selection reaches reversed cells")
+    session.check(selection_visible(before, cells), "Source selection reaches highlighted cells")
     session.check(not any(c["png_error"] for c in session.captures), "Simplified fixture exports all native PNGs")
 
 
@@ -183,7 +207,7 @@ def unicode_and_edits(session):
         "observation": "Native PNG rejects combining cells. Raw ZWJ bytes survive, but backend cells split the emoji and app cursor positioning overlaps it. SVG conversion cannot repair cell state.",
     })
     session.key("Ctrl+Home")
-    click_word(session, "☐")
+    click_word(session, "□")
     session.key("Ctrl+s")
     toggled = session.original_bytes.replace(b"- [ ] Toggle", b"- [x] Toggle")
     session.check(session.fixture.read_bytes() == toggled, "Checkbox click changes only intended source marker")
@@ -376,14 +400,11 @@ def chrome(session):
         session.check(len(filenames) == 1, "Idle filename appears exactly once: " + label,
                       filename=name, occurrences=len(filenames))
         header_y = filenames[0][0]["y"]
-        if state["cols"] >= 80:
-            session.check(len(wordmarks) == 1 and wordmarks[0][0]["y"] == header_y,
-                          "Wordmark and unique tab filename share one header row: " + label)
-        if wordmarks:
-            session.check(len(wordmarks) == 1 and wordmarks[0][-1]["x"] < filenames[0][0]["x"],
-                          "Wordmark is separate from the document tab: " + label)
-        if state["cols"] < 48:
-            session.check(not wordmarks, "Compact header gives filename space priority: " + label)
+        session.check(not wordmarks, "No wordmark competes with the document for header space: " + label)
+        labels = outline_labels(cells)
+        if labels:
+            session.check(labels[0][0]["y"] == header_y and labels[0][-1]["x"] < filenames[0][0]["x"],
+                          "Outline header shares the tab row, left of the tabs: " + label)
         session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9|Ctrl[+-][A-Za-z])\b", state["text"]),
                       "Idle chrome has no document list, Live label, or persistent shortcut labels: " + label)
         if expect_outline is not None:
@@ -400,8 +421,8 @@ def chrome(session):
                       "Nerd icons are opt-in and plain mode emits no private-use glyphs: " + label,
                       expected_icons="nerd" if nerd else "plain")
         color_samples = [("active filename", filenames[0])]
-        if wordmarks:
-            color_samples.append(("wordmark", wordmarks[0]))
+        if labels:
+            color_samples.append(("outline header", labels[0]))
         for part, chunk in color_samples:
             ratios = [contrast_ratio(c["fg"], c["bg"]) for c in chunk]
             session.check(min(ratios) >= 3, f"Readable explicit {part} colors: {label}", minimum_contrast=min(ratios))
@@ -451,8 +472,9 @@ def chrome(session):
     session.key("Ctrl+g")
     session.call("type", "3")
     session.key("Enter")
+    before = session.cells()
     session.key("Ctrl+Shift+Right")
-    session.check(any(c["inverse"] for c in session.cells()), "Document selection is visible before theme changes")
+    session.check(selection_visible(before, session.cells()), "Document selection is visible before theme changes")
     catalog = ROOT / "third_party/iterm2-themes/palettes.json"
     if not catalog.exists():
         catalog = Path(__file__).with_name("palettes.json")
@@ -464,11 +486,11 @@ def chrome(session):
         session.call("type", theme)
         session.key("Enter")
         state, cells = idle(f"04-theme-{index + 1:02d}", expect_outline=True)
+        background = next(c["bg"] for c in cells if (c["x"], c["y"]) == (state["cols"] - 1, 3))
         if theme in palettes:
-            background = next(c["bg"] for c in cells if (c["x"], c["y"]) == (state["cols"] - 1, 3))
             session.check(background.lower() == palettes[theme]["background"].lower(),
                           f"{theme} retains its upstream document background alongside new chrome")
-        session.check(any(c["inverse"] for c in cells), f"{theme} preserves the existing source selection")
+        session.check(highlighted(cells, "Keep", background), f"{theme} preserves the existing source selection")
     session.paste("REPLACED")
     session.key("Ctrl+s")
     session.check(session.fixture.read_bytes() == source.replace("Keep", "REPLACED", 1).encode(),
@@ -654,7 +676,7 @@ def workflows(session):
     chooser("F10")
     count("Open documents", 2)
     text = session.state()["text"]
-    session.check("* Untitled 2.md" in text and "Unsaved document" in text and name in text,
+    session.check("● Untitled 2.md" in text and "Unsaved document" in text and name in text,
                   "Document picker includes dirty unsaved and file-backed tabs")
     session.capture("02-documents-dirty-unsaved")
     session.key("Escape")

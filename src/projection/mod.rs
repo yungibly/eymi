@@ -9,7 +9,7 @@ mod tests;
 use eymi::{Selection, markdown::Task};
 pub use parse::Parsed;
 use ratatui::style::{Color, Style};
-use std::{collections::BTreeMap, ops::Range};
+use std::ops::Range;
 
 #[derive(Clone, Debug)]
 pub struct Glyph {
@@ -73,7 +73,37 @@ impl VisualRow {
 pub struct Projection {
     pub rows: Vec<VisualRow>,
     pub revision: u64,
-    positions: BTreeMap<usize, (usize, usize)>,
+    positions: Positions,
+}
+
+/// Caret cells by source offset. Layout records them in source order, so
+/// recording almost always appends or refines the latest entry.
+#[derive(Clone, Debug, Default)]
+struct Positions(Vec<(usize, (usize, usize))>);
+
+impl Positions {
+    fn insert(&mut self, offset: usize, cell: (usize, usize)) {
+        match self.0.last_mut() {
+            Some((last, value)) if *last == offset => *value = cell,
+            Some((last, _)) if *last > offset => {
+                match self.0.binary_search_by_key(&offset, |(at, _)| *at) {
+                    Ok(index) => self.0[index].1 = cell,
+                    Err(index) => self.0.insert(index, (offset, cell)),
+                }
+            }
+            _ => self.0.push((offset, cell)),
+        }
+    }
+
+    /// The cell recorded at `offset`, or else at the nearest earlier offset.
+    fn at_or_before(&self, offset: usize) -> Option<(usize, usize)> {
+        let index = self.0.partition_point(|(at, _)| *at <= offset);
+        index.checked_sub(1).map(|index| self.0[index].1)
+    }
+
+    fn contains(&self, offset: usize) -> bool {
+        self.0.binary_search_by_key(&offset, |(at, _)| *at).is_ok()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,11 +147,7 @@ impl Projection {
     }
 
     pub fn cursor(&self, offset: usize) -> (usize, usize) {
-        self.positions
-            .get(&offset)
-            .copied()
-            .or_else(|| self.positions.range(..=offset).next_back().map(|(_, p)| *p))
-            .unwrap_or((0, 0))
+        self.positions.at_or_before(offset).unwrap_or((0, 0))
     }
 
     pub fn hit(&self, row: usize, column: usize) -> Hit {

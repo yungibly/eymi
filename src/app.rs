@@ -1663,13 +1663,14 @@ impl App {
             .as_ref()
             .filter(|drag| drag.map.focus == focus)
             .map(|drag| drag.map.start);
+        // A six-cell label chip and a gap precede the input surface.
         let label = match focus {
-            Focus::Query => "Find: [",
-            Focus::Replacement => "With: [",
+            Focus::Query => " Find  ",
+            Focus::Replacement => " With  ",
         };
         frame.render_widget(
             Block::default().style(chrome_field()),
-            Rect::new(area.x + 7, area.y, area.width.saturating_sub(8), 1),
+            Rect::new(area.x + 7, area.y, area.width.saturating_sub(7), 1),
         );
         let mut map = draw_field(
             frame,
@@ -1680,21 +1681,19 @@ impl App {
             focused && show_cursor,
             frozen_start,
         );
-        if focused {
-            frame.buffer_mut().set_style(
-                Rect::new(area.x, area.y, area.width.min(7), 1),
-                chrome_focus().add_modifier(Modifier::BOLD),
-            );
-        }
-        if area.width > 0 {
-            frame.render_widget(
-                Paragraph::new("]").style(if focused {
-                    chrome_focus()
-                } else {
-                    chrome_muted()
-                }),
-                Rect::new(area.right() - 1, area.y, 1, 1),
-            );
+        let colors = theme::chrome_palette();
+        let chip = if focused {
+            colors.status_accent.style().add_modifier(Modifier::BOLD)
+        } else {
+            colors.status_secondary.style()
+        };
+        frame
+            .buffer_mut()
+            .set_style(Rect::new(area.x, area.y, area.width.min(6), 1), chip);
+        if area.width > 6 {
+            frame
+                .buffer_mut()
+                .set_style(Rect::new(area.x + 6, area.y, 1, 1), chrome_style());
         }
         map.area = area;
         self.search_geometry.fields.push(map);
@@ -2330,16 +2329,16 @@ fn draw_search_buttons(
     actions: &[(SearchAction, bool)],
 ) -> Vec<SearchButton> {
     let label = |action, compact| match action {
-        SearchAction::Previous if compact < 2 => "[Prev]",
-        SearchAction::Previous => "[<]",
-        SearchAction::Next if compact < 2 => "[Next]",
-        SearchAction::Next => "[>]",
-        SearchAction::Replace if compact == 0 => "[Replace 1]",
-        SearchAction::Replace => "[One]",
-        SearchAction::ReplaceAll if compact == 0 => "[Replace all]",
-        SearchAction::ReplaceAll => "[All]",
-        SearchAction::Close if compact < 2 => "[Close]",
-        SearchAction::Close => "[x]",
+        SearchAction::Previous if compact < 2 => " Prev ",
+        SearchAction::Previous => " ‹ ",
+        SearchAction::Next if compact < 2 => " Next ",
+        SearchAction::Next => " › ",
+        SearchAction::Replace if compact == 0 => " Replace 1 ",
+        SearchAction::Replace => " One ",
+        SearchAction::ReplaceAll if compact == 0 => " Replace all ",
+        SearchAction::ReplaceAll => " All ",
+        SearchAction::Close if compact < 2 => " Close ",
+        SearchAction::Close => " × ",
     };
     let compact = (0..=2)
         .find(|compact| {
@@ -2356,7 +2355,7 @@ fn draw_search_buttons(
     for (action, enabled) in actions {
         let mut text = label(*action, compact);
         if *action == SearchAction::Close && area.width < 3 {
-            text = "x";
+            text = "×";
         }
         let width = text.len();
         let reserve = if *action == SearchAction::Close
@@ -2373,7 +2372,7 @@ fn draw_search_buttons(
         }
         let rect = Rect::new(area.x + column as u16, area.y, width as u16, 1);
         let style = if *enabled {
-            chrome_style().add_modifier(Modifier::UNDERLINED)
+            chrome_style().bg(theme::chrome_palette().tab_active.background)
         } else {
             chrome_muted()
         };
@@ -2454,7 +2453,9 @@ pub(crate) fn draw_field(
             break;
         }
         let style = if *start < selected.end && selected.start < *end {
-            Style::default().add_modifier(Modifier::REVERSED)
+            Style::default()
+                .bg(palette().selection)
+                .fg(palette().selection_text)
         } else {
             Style::default()
         };
@@ -3636,20 +3637,19 @@ mod tests {
             assert_eq!(button(&app, SearchAction::Next).area.width, 6);
             assert_eq!(button(&app, SearchAction::Close).area.width, 7);
             for field in &app.search_geometry.fields {
-                assert_eq!(
-                    terminal.backend().buffer()[(field.area.x + 6, field.area.y)].symbol(),
-                    "["
-                );
-                assert_eq!(
-                    terminal.backend().buffer()[(field.area.right() - 1, field.area.y)].symbol(),
-                    "]"
-                );
+                let buffer = terminal.backend().buffer();
+                let label: String = (field.area.x..field.area.x + 6)
+                    .map(|x| buffer[(x, field.area.y)].symbol())
+                    .collect();
+                assert!(matches!(label.as_str(), " Find " | " With "), "{label:?}");
+                let edge = &buffer[(field.area.right() - 1, field.area.y)];
+                assert_eq!(edge.bg, chrome_field().bg.unwrap());
                 assert!(field.area.width >= 16);
             }
             let field = app.search_geometry.fields[0].area;
             assert_eq!(
-                terminal.backend().buffer()[(field.x, field.y)].fg,
-                chrome_focus().fg.unwrap()
+                terminal.backend().buffer()[(field.x, field.y)].bg,
+                theme::chrome_palette().status_accent.background
             );
             let cursor = terminal.get_cursor_position().unwrap();
             assert!(contains(field, cursor.x, cursor.y));
@@ -3769,7 +3769,7 @@ mod tests {
             }
             let field = &app.search_geometry.fields[0];
             let selected = &buffer[(field.glyphs[0].column, field.area.y)];
-            assert!(selected.modifier.contains(Modifier::REVERSED));
+            assert_eq!(selected.bg, palette().selection);
             assert_ne!(selected.fg, Color::Reset);
             assert_ne!(selected.bg, Color::Reset);
             assert_ne!(selected.fg, selected.bg);
@@ -4141,7 +4141,7 @@ mod tests {
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.search.focus, Focus::Replacement);
         let narrow = crate::simulation::snapshot(&mut app, 12, 16).unwrap();
-        assert!(narrow.contains("[x]"));
+        assert!(narrow.contains('×'));
         app.handle_event(Event::Resize(80, 4));
         let short = crate::simulation::snapshot(&mut app, 80, 4).unwrap();
         assert!(short.contains("Resize to search"));

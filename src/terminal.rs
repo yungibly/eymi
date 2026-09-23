@@ -1,17 +1,17 @@
 use crate::workspace::Workspace as App;
+#[cfg(unix)]
+use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use crossterm::{
-    cursor::Show,
+    cursor::{SetCursorStyle, Show},
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         PopKeyboardEnhancementFlags,
     },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-#[cfg(unix)]
-use crossterm::{
-    event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
-    queue,
+    execute, queue,
+    terminal::{
+        BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
@@ -28,6 +28,7 @@ const ALTERNATE: u8 = 2;
 const KEYBOARD: u8 = 4;
 const MOUSE: u8 = 8;
 const PASTE: u8 = 16;
+const CURSOR: u8 = 32;
 
 #[derive(Default)]
 struct TerminalState(AtomicU8);
@@ -68,6 +69,9 @@ impl TerminalState {
         execute!(output, EnableMouseCapture)?;
         self.mark(PASTE);
         execute!(output, EnableBracketedPaste)?;
+        // Typing always inserts, so the caret reads as an insertion bar.
+        self.mark(CURSOR);
+        execute!(output, SetCursorStyle::SteadyBar)?;
         Ok(())
     }
 
@@ -84,6 +88,9 @@ impl TerminalState {
         }
         if modes & KEYBOARD != 0 {
             let _ = execute!(output, PopKeyboardEnhancementFlags);
+        }
+        if modes & CURSOR != 0 {
+            let _ = execute!(output, SetCursorStyle::DefaultUserShape);
         }
         if modes & ALTERNATE != 0 {
             let _ = execute!(output, LeaveAlternateScreen);
@@ -143,7 +150,10 @@ pub fn run(app: &mut App) -> io::Result<()> {
     let mut redraw = true;
     while !app.should_exit {
         if redraw {
+            // Present each frame atomically where the terminal supports it.
+            queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
             terminal.draw(|frame| app.draw(frame))?;
+            execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         }
         redraw = false;
         if event::poll(std::time::Duration::from_millis(200))? {
