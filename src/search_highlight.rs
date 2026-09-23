@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style};
 /// Concealed syntax has no visible glyph to pass here and stays concealed.
 ///
 /// Precedence: a current active match gets a bright background plus bold and
-/// underline; any other selected text keeps ordinary reversed selection;
+/// underline; any other selected text takes the theme's selection surface;
 /// inactive matches get a quiet background; everything else keeps base styling.
 /// Match colors override foreground/background to keep contrast independent of
 /// Markdown token colors. Other Markdown modifiers survive, except DIM and
@@ -48,7 +48,7 @@ pub fn style_match(
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     }
     if selected {
-        return base.add_modifier(Modifier::REVERSED);
+        return crate::theme::selected(base);
     }
     if matched {
         return base
@@ -137,7 +137,7 @@ mod tests {
             .fg(Color::Green)
             .add_modifier(Modifier::ITALIC);
         let matches = [2..5, 9..12];
-        let selection = base.add_modifier(Modifier::REVERSED);
+        let selection = crate::theme::selected(base);
         assert_eq!(
             style_match(base, &(0..2), true, &matches, Some(&matches[1])),
             selection
@@ -160,7 +160,7 @@ mod tests {
         let active = 2..5;
         assert_eq!(
             style_match(base, &active, true, &[], None),
-            base.add_modifier(Modifier::REVERSED)
+            crate::theme::selected(base)
         );
         assert_eq!(
             style_match(base, &active, false, &[], None),
@@ -169,7 +169,7 @@ mod tests {
         // An old active hint cannot keep a highlight when matches were cleared.
         assert_eq!(
             style_match(base, &active, true, &[], Some(&active)),
-            base.add_modifier(Modifier::REVERSED)
+            crate::theme::selected(base)
         );
     }
 
@@ -245,10 +245,8 @@ mod tests {
             assert!(!style.add_modifier.contains(Modifier::REVERSED));
             assert!(style.add_modifier.contains(Modifier::ITALIC));
         }
-        assert!(
-            style_match(base, &(0..2), true, &matches, None)
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
+        let selection = style_match(base, &(0..2), true, &matches, None);
+        assert!(!selection.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(selection.bg, Some(crate::theme::palette().selection));
     }
 }

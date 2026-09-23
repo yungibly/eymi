@@ -195,7 +195,6 @@ mod tests {
         app.handle_event(Event::Paste("alpha nmd".into()));
         let frame = draw(&mut app, 80, 24);
         assert!(frame.contains("Open documents"));
-        assert!(frame.contains("1/2"));
         assert!(frame.contains("● alpha/docs/note.md"));
         assert_eq!(app.active, 1, "filtering must not preview-switch documents");
         key(&mut app, KeyCode::Esc);

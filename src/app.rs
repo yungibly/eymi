@@ -1894,24 +1894,16 @@ impl App {
         (line, text[line_start..head].graphemes(true).count() + 1)
     }
 
-    /// What the selection spans, or how long the document is.
+    /// Document length in words, and how much of it a selection covers.
     fn extent(&self) -> String {
-        let selection = self.document.selection();
-        if !selection.is_empty() {
-            let text = self.document.selected_text();
-            let lines = text.lines().count();
-            return if lines > 1 {
-                format!("{lines} lines selected")
-            } else {
-                let chars = text.graphemes(true).count();
-                format!(
-                    "{chars} {} selected",
-                    if chars == 1 { "char" } else { "chars" }
-                )
-            };
-        }
         let words = self.source_word_count();
-        format!("{words} {}", if words == 1 { "word" } else { "words" })
+        let unit = if words == 1 { "word" } else { "words" };
+        if self.document.selection().is_empty() {
+            format!("{words} {unit}")
+        } else {
+            let selected = self.document.selected_text().unicode_words().count();
+            format!("{selected} of {words} {unit}")
+        }
     }
 
     /// Render one segmented status line. The caller may pass the full frame
@@ -2693,6 +2685,10 @@ mod tests {
         assert!(status_text(&draw(&mut app, 80, 24), 23).contains("2 words"));
         app.document.redo();
         assert!(status_text(&draw(&mut app, 80, 24), 23).contains("3 words"));
+        app.document
+            .set_selection(Selection { anchor: 0, head: 7 })
+            .unwrap();
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("2 of 3 words"));
     }
 
     #[test]
@@ -4569,14 +4565,10 @@ mod tests {
         click_button(&mut app, SearchAction::Close);
         let terminal = draw(&mut app, 80, 24);
         assert_eq!(app.document.selection(), selected);
-        for offset in [0, 4, 8] {
+        for offset in [0, 8] {
             assert_eq!(source_cell(&app, &terminal, offset).bg, ordinary);
         }
-        assert!(
-            source_cell(&app, &terminal, 4)
-                .modifier
-                .contains(Modifier::REVERSED)
-        );
+        assert_eq!(source_cell(&app, &terminal, 4).bg, palette().selection);
         assert_eq!(app.document.text(), "cat cat cat plain");
         assert!(!app.document.is_dirty());
     }
@@ -4615,8 +4607,14 @@ mod tests {
         app.handle_event(Event::Paste("missing".into()));
         let terminal = draw(&mut app, 80, 24);
         assert!(app.search.matches.is_empty());
+        // Without matches, only the retained selection keeps a surface.
         for offset in [0, 4, 8] {
-            assert_eq!(source_cell(&app, &terminal, offset).bg, ordinary);
+            let expected = if app.document.selection().range().contains(&offset) {
+                palette().selection
+            } else {
+                ordinary
+            };
+            assert_eq!(source_cell(&app, &terminal, offset).bg, expected);
         }
         assert_eq!(app.document.text(), "cat cat plain");
     }

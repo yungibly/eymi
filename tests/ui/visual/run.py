@@ -510,7 +510,7 @@ def chrome(session):
                       f"Active document remains visible once during tab overflow at {width} columns")
         active = labels[0]
         dirty = [c for c in cells if c["y"] == active[0]["y"]
-                 and active[0]["x"] - 4 <= c["x"] <= active[-1]["x"] + 3 and c["char"] == "*"]
+                 and active[0]["x"] - 4 <= c["x"] <= active[-1]["x"] + 3 and c["char"] == "●"]
         session.check(bool(dirty), f"Active dirty marker survives tab overflow at {width} columns")
         session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9)\b", state["text"]),
                       f"Tab overflow does not introduce repeated chrome hints at {width} columns")
@@ -520,7 +520,7 @@ def chrome(session):
     session.key("F8")
     session.call("resize", 20, 10)
     state, cells = session.capture("06-compact-dirty-tab-20x10")
-    session.check("Tab9" in state["text"] and any(c["char"] == "*" for c in cells),
+    session.check("Tab9" in state["text"] and any(c["char"] == "●" for c in cells),
                   "Compact header preserves the current buffer and its dirty marker")
     session.call("resize", 160, 45)
     for _ in range(8):
@@ -623,7 +623,8 @@ def workflows(session):
 
     def count(title, expected):
         text = session.state()["text"]
-        session.check(re.search(re.escape(title) + r"\s*·\s*" + str(expected) + r"\b", text),
+        # The border carries the title and a "shown/total" count on one row.
+        session.check(re.search(re.escape(title) + r".*?\b" + str(expected) + r"/\d+", text),
                       f"{title} shows exactly {expected} choices", text=text)
 
     def chooser(key, query=""):

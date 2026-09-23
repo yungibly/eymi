@@ -605,6 +605,20 @@ pub fn palette() -> Palette {
     current_theme().palette()
 }
 
+/// Selected text sits on the selection surface and keeps its own ink where
+/// that stays readable, as token and heading colors usually do.
+pub fn selected(style: Style) -> Style {
+    let colors = palette();
+    let ink = style
+        .fg
+        .filter(|ink| matches!(ink, Color::Rgb(..)) && contrast(*ink, colors.selection) >= 3.0)
+        .unwrap_or(colors.selection_text);
+    style
+        .fg(ink)
+        .bg(colors.selection)
+        .remove_modifier(ratatui::style::Modifier::REVERSED)
+}
+
 pub fn document_style() -> Style {
     let colors = palette();
     Style::default().fg(colors.foreground).bg(colors.background)
