@@ -77,6 +77,20 @@ fn document_control_sequences_never_reach_terminal() {
     let p = project("hello\x1b[31m\u{009b}text", 0, 80, false);
     assert!(!display(&p).contains(['\x1b', '\u{009b}']));
     assert!(display(&p).contains('␛'));
+    // Fence info strings become labels drawn beside the code.
+    let p = project(
+        "intro\n\n```ru\u{202e}st\x1b]0;x\x07\nfn x() {}\n```\n",
+        0,
+        80,
+        true,
+    );
+    let labels: Vec<_> = p
+        .rows
+        .iter()
+        .filter_map(|row| row.fill.as_ref()?.label.as_ref())
+        .collect();
+    assert!(labels.iter().any(|(label, _)| label.contains("rust")));
+    assert!(labels.iter().all(|(label, _)| !label.contains(unsafe_char)));
 }
 
 #[test]
@@ -550,4 +564,132 @@ fn other_files_highlight_as_their_language_without_markdown_rendering() {
         Some(crate::theme::palette().syntax.keyword)
     );
     assert!(p.rows.iter().all(|row| row.fill.is_none()));
+}
+
+/// Deterministic noise for generated documents.
+struct Noise(u64);
+impl Noise {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % bound as u64) as usize
+    }
+    fn text(&mut self, pieces: &[&str], count: usize) -> String {
+        (0..count)
+            .map(|_| pieces[self.below(pieces.len())])
+            .collect()
+    }
+}
+
+#[rustfmt::skip]
+const MARKDOWN_PIECES: &[&str] = &[
+    "#", "# ", "## ", "###### ", "\n", "\n\n", "\r\n", "\r", " ", "  ", "\t", "*", "**", "_", "__",
+    "~", "~~", "`", "``", "```", "~~~", "```rust\n", "```py\n", "```\n", "[", "]", "(", ")", "![",
+    "](", "<", ">", "> ", ">> ", "- ", "* ", "+ ", "1. ", "2) ", "- [ ] ", "- [x] ", "|",
+    "| a | b |\n", "|---|:-:|\n", "| - |\n", "---\n", "***\n", "===\n", "\\", "&amp;", "&#x41;",
+    "<div>", "</div>", "<!--", "-->", "http://x.y", "www.a.b", "a", "word ", "é", "e\u{301}", "界",
+    "👩\u{200d}💻", "\u{200b}", "\u{202e}", "\x1b", "\u{7f}", "\u{9b}", "[!NOTE]\n", "[!TIP] ",
+    "    ", "\u{a0}", "x\n---\n", "---\ntitle: a\n---\n", "[r]: /u\n", "[r]", "<http://a>",
+    "a@b.co",
+];
+
+#[rustfmt::skip]
+const CODE_PIECES: &[&str] = &[
+    "\"", "'", "`", "\\", "/*", "*/", "//", "#", "--", "<!--", "-->", "\"\"\"", "'''", "r#\"",
+    "\"#", "<<EOF\n", "<<-EOF\n", "<<'EOF'\n", "EOF\n", "${", "}", "{", "(", ")", "[", "]", "$(",
+    "\n", "\r\n", "\r", "\t", " ", "fn ", "let ", "def ", "class ", "0x1F", "1.5e10", "0b101",
+    "'a'", "b'x'", "@", "::", "->", "=>", "|", "&&", "<", ">", "</", "/>", "<?", "?>", "%", ";",
+    ",", ".", "é", "界", "\x1b", "\u{0}", "#!", "#[", "--[[", "]]", "=begin\n", "=end\n", "(*",
+    "*)", "{-", "-}", "#|", "|#", "%{", "%}", "\"\\u{1F600}\"", "r\"", "f\"", "b\"", "@\"", "$\"",
+    "x", "_", "e\u{301}", "\u{feff}", "<script>", "</script>", "<style>", "</style>", "---\n",
+    "[section]\n", "key = ", "- ", ": ",
+];
+
+fn check_highlight(language: &crate::syntax::Language, source: &str, segments: &[Range<usize>]) {
+    let spans = crate::syntax::highlight(language, source, segments);
+    let mut last = 0;
+    for (range, _) in &spans {
+        assert!(
+            range.start >= last && range.start < range.end,
+            "{}: {range:?} in {source:?}",
+            language.name()
+        );
+        assert!(source.is_char_boundary(range.start) && source.is_char_boundary(range.end));
+        assert!(
+            segments
+                .iter()
+                .any(|s| s.start <= range.start && range.end <= s.end),
+            "{}: {range:?} outside {segments:?} in {source:?}",
+            language.name()
+        );
+        last = range.end;
+    }
+}
+
+fn check_layouts(text: &str, parsed: &Parsed, noise: &mut Noise) {
+    let boundaries: Vec<_> = text
+        .grapheme_indices(true)
+        .map(|(i, _)| i)
+        .chain([text.len()])
+        .collect();
+    for _ in 0..3 {
+        let caret = boundaries[noise.below(boundaries.len())];
+        let width = [1, 2, 5, 9, 17, 40, 88][noise.below(7)];
+        let live = noise.below(3) > 0;
+        let p = Projection::build(text, parsed, Selection::caret(caret), width, live);
+        for (index, row) in p.rows.iter().enumerate() {
+            let mut column = 0;
+            for glyph in &row.glyphs {
+                assert!(glyph.column >= column, "overlap at row {index} of {text:?}");
+                column = glyph.column + glyph.width;
+                assert!(boundaries.contains(&glyph.source.start), "{text:?}");
+                assert!(boundaries.contains(&glyph.source.end), "{text:?}");
+                assert!(!glyph.text.contains(['\x1b', '\u{9b}', '\u{7f}', '\u{0}']));
+            }
+            for col in [0, 1, width / 2, width + 2] {
+                assert!(boundaries.contains(&p.hit(index, col).offset), "{text:?}");
+            }
+        }
+        for offset in &boundaries {
+            assert!(p.cursor(*offset).0 < p.rows.len());
+        }
+    }
+}
+
+/// Generated code and Markdown, heavy on delimiters, escapes, controls,
+/// and unfinished constructs, in every language and several widths.
+#[test]
+fn generated_sources_keep_highlighting_and_layout_contracts() {
+    let mut noise = Noise(0x9e37_79b9_7f4a_7c15);
+    for round in 0..300 {
+        let length = 1 + noise.below(60);
+        let code = noise.text(CODE_PIECES, length);
+        for language in crate::syntax::Language::all() {
+            check_highlight(language, &code, std::slice::from_ref(&(0..code.len())));
+            // Split into segments at line boundaries, dropping some lines.
+            let mut segments = Vec::new();
+            let mut start = 0;
+            for (at, _) in code.match_indices('\n') {
+                if noise.below(3) > 0 {
+                    segments.push(start..at + 1);
+                }
+                start = at + 1;
+            }
+            if start < code.len() {
+                segments.push(start..code.len());
+            }
+            check_highlight(language, &code, &segments);
+        }
+        let language =
+            &crate::syntax::Language::all()[round % crate::syntax::Language::all().len()];
+        let doc = Document::new(&code);
+        let parsed = Parsed::new(&code, doc.markdown(), false, Some(language));
+        check_layouts(&code, &parsed, &mut noise);
+        let count = 1 + noise.below(80);
+        let text = noise.text(MARKDOWN_PIECES, count);
+        let doc = Document::new(&text);
+        let parsed = Parsed::new(&text, doc.markdown(), true, None);
+        check_layouts(&text, &parsed, &mut noise);
+    }
 }

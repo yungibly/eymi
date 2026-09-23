@@ -1,6 +1,10 @@
-use std::ops::Range;
+use std::{borrow::Cow, cmp::Reverse, ops::Range};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+/// Emphasis matching one parse may spend, counted as underscores times
+/// delimiters per paragraph: pulldown-cmark's worst case.
+const EMPHASIS_BUDGET: u64 = 1 << 26;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
@@ -53,6 +57,69 @@ pub fn options() -> Options {
         | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
 }
 
+/// Text to hand the parser. pulldown-cmark rescans every open emphasis
+/// delimiter for each `_` that can only close one, so a paragraph can cost
+/// its underscores times its delimiters. Past a budget, the costliest
+/// paragraphs are parsed with `_` read as `,`. Offsets stay exact, and the
+/// document and its display never change.
+pub fn parser_input(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
+    let mut paragraphs = Vec::new();
+    let (mut start, mut underscores, mut delimiters) = (0, 0u64, 0u64);
+    let mut line = 0;
+    while line <= bytes.len() {
+        let end = bytes[line..]
+            .iter()
+            .position(|b| matches!(b, b'\n' | b'\r'))
+            .map_or(bytes.len(), |at| line + at);
+        let content = &bytes[line..end];
+        // Blank lines end paragraphs; other block boundaries only make
+        // this estimate more cautious.
+        if content.iter().all(|b| matches!(b, b' ' | b'\t')) {
+            if underscores > 0 {
+                paragraphs.push((start..line, underscores.saturating_mul(delimiters)));
+            }
+            (start, underscores, delimiters) = (end, 0, 0);
+        }
+        for byte in content {
+            match byte {
+                b'_' => (underscores, delimiters) = (underscores + 1, delimiters + 1),
+                b'*' | b'~' => delimiters += 1,
+                _ => {}
+            }
+        }
+        line = end
+            + if bytes[end..].starts_with(b"\r\n") {
+                2
+            } else {
+                1
+            };
+    }
+    if underscores > 0 {
+        paragraphs.push((start..bytes.len(), underscores.saturating_mul(delimiters)));
+    }
+    let mut total = paragraphs
+        .iter()
+        .fold(0u64, |total, (_, cost)| total.saturating_add(*cost));
+    if total <= EMPHASIS_BUDGET {
+        return Cow::Borrowed(text);
+    }
+    paragraphs.sort_unstable_by_key(|(_, cost)| Reverse(*cost));
+    let mut input = bytes.to_vec();
+    for (range, cost) in paragraphs {
+        if total <= EMPHASIS_BUDGET {
+            break;
+        }
+        for byte in &mut input[range] {
+            if *byte == b'_' {
+                *byte = b',';
+            }
+        }
+        total = total.saturating_sub(cost);
+    }
+    Cow::Owned(String::from_utf8(input).expect("replacing ASCII keeps UTF-8 valid"))
+}
+
 pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
     let mut snapshot = MarkdownSnapshot {
         revision,
@@ -60,7 +127,8 @@ pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
     };
     let mut items = Vec::<Range<usize>>::new();
     let bom_len = bom_len(text);
-    for (event, raw_range) in Parser::new_ext(&text[bom_len..], options()).into_offset_iter() {
+    let input = parser_input(&text[bom_len..]);
+    for (event, raw_range) in Parser::new_ext(&input, options()).into_offset_iter() {
         let range = raw_range.start + bom_len..raw_range.end + bom_len;
         let kind = match event {
             Event::Start(Tag::Paragraph) => Some(BlockKind::Paragraph),
@@ -118,6 +186,27 @@ pub fn bom_len(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runaway_underscore_paragraphs_are_parsed_as_commas_at_the_same_offsets() {
+        let ordinary = "Some _emphasis_, snake_case, and ~~more~~.\n\n*a* __b__\n";
+        assert!(matches!(parser_input(ordinary), Cow::Borrowed(_)));
+        // Each line alone stays within budget; a CRLF paragraph joins them.
+        let line = "*a_".repeat(3000);
+        let text = format!("Keep _this_.\n\n{line}\r\n{line}\r\n\r\nAnd _this_.\n");
+        let input = parser_input(&text);
+        assert_eq!(input.len(), text.len());
+        let runaway = 14..text.len() - 13;
+        assert!(!input[runaway.clone()].contains('_'));
+        assert_eq!(
+            input[runaway.clone()].replace(',', "_"),
+            text[runaway.clone()]
+        );
+        assert_eq!(input[..runaway.start], text[..runaway.start]);
+        assert_eq!(input[runaway.end..], text[runaway.end..]);
+        let separate = format!("{line}\r\n\r\n{line}\n");
+        assert!(matches!(parser_input(&separate), Cow::Borrowed(_)));
+    }
 
     #[test]
     fn task_ranges_point_only_to_state_and_keep_source_revision() {

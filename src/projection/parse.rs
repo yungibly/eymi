@@ -123,9 +123,8 @@ impl Parsed {
         let mut in_head = false;
         let mut html: Option<Vec<Range<usize>>> = None;
         let mut quotes: Vec<(Range<usize>, Option<BlockQuoteKind>)> = Vec::new();
-        for (event, range) in
-            Parser::new_ext(&source[bom..], markdown::options()).into_offset_iter()
-        {
+        let input = markdown::parser_input(&source[bom..]);
+        for (event, range) in Parser::new_ext(&input, markdown::options()).into_offset_iter() {
             let range = range.start + bom..range.end + bom;
             // A bullet waits only for a task marker that would replace it.
             if let Some((start, depth)) = bullet
@@ -737,7 +736,7 @@ fn fence_label(info: &str) -> String {
         .find(|word| !word.is_empty())
         .unwrap_or("")
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !super::unsafe_char(*c))
         .take(24)
         .collect()
 }

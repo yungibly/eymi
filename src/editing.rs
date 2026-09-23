@@ -288,7 +288,7 @@ pub fn toggle_inline(document: &mut Document, style: InlineStyle) -> bool {
 
 fn has_inline_wrapper(source: &str, style: InlineStyle, delimiter_len: usize) -> bool {
     source.len() == delimiter_len * 2
-        || Parser::new_ext(source, markdown::options())
+        || Parser::new_ext(&markdown::parser_input(source), markdown::options())
             .into_offset_iter()
             .any(|(event, range)| {
                 range == (0..source.len())
@@ -342,13 +342,16 @@ pub fn enter(document: &mut Document) -> bool {
             ) && block.range.start <= line.end
                 && block.range.end > line.start
         })
-        || Parser::new_ext(&source[markdown::bom_len(source)..], markdown::options())
-            .into_offset_iter()
-            .any(|(event, literal)| {
-                matches!(event, Event::Code(_))
-                    && literal.start + markdown::bom_len(source) < range.start
-                    && range.start < literal.end + markdown::bom_len(source)
-            })
+        || Parser::new_ext(
+            &markdown::parser_input(&source[markdown::bom_len(source)..]),
+            markdown::options(),
+        )
+        .into_offset_iter()
+        .any(|(event, literal)| {
+            matches!(event, Event::Code(_))
+                && literal.start + markdown::bom_len(source) < range.start
+                && range.start < literal.end + markdown::bom_len(source)
+        })
     {
         return document.literal_newline();
     }

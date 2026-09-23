@@ -253,6 +253,15 @@ impl Projection {
     }
 }
 
+/// Characters a terminal would act on rather than draw: C0 and C1 controls,
+/// DEL, and bidirectional overrides and isolates.
+pub(crate) fn unsafe_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 pub fn safe_text(text: &str) -> String {
     text.chars()
         .map(|c| match c {

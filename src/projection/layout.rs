@@ -4,7 +4,7 @@
 use super::{
     Fill, FillKind, Glyph, Positions, Projection, VisualRow, overlaps,
     parse::{Decoration, Parsed, RAIL, Table, line_end, next_line},
-    safe_text,
+    safe_text, unsafe_char,
 };
 use crate::theme::{self, Palette};
 use pulldown_cmark::Alignment;
@@ -86,27 +86,65 @@ struct PendingFill {
 struct Sweep<'a> {
     spans: &'a [(Range<usize>, Style)],
     next: usize,
-    active: Vec<usize>,
+    active: Vec<Active>,
+}
+
+/// A span overlapping the latest request, with every active span up to it
+/// already patched together and the earliest end among them.
+#[derive(Clone)]
+struct Active {
+    index: usize,
+    style: Style,
+    earliest_end: usize,
 }
 
 impl Sweep<'_> {
     /// Styles are requested in source order, so spans enter and leave once.
+    /// Only spans above the lowest departed one are patched again, which
+    /// keeps deeply nested spans linear.
     fn style(&mut self, base: Style, range: &Range<usize>) -> Style {
         while self
             .spans
             .get(self.next)
             .is_some_and(|(span, _)| span.start < range.end)
         {
-            self.active.push(self.next);
+            self.enter(self.next);
             self.next += 1;
         }
-        let spans = self.spans;
+        let mut kept = self.active.len();
+        while kept > 0 && self.active[kept - 1].earliest_end <= range.start {
+            kept -= 1;
+        }
+        if kept < self.active.len() {
+            let spans = self.spans;
+            let remaining: Vec<usize> = self
+                .active
+                .drain(kept..)
+                .map(|active| active.index)
+                .filter(|index| spans[*index].0.end > range.start)
+                .collect();
+            for index in remaining {
+                self.enter(index);
+            }
+        }
         self.active
-            .retain(|index| spans[*index].0.end > range.start);
-        self.active
-            .iter()
-            .filter(|index| overlaps(&spans[**index].0, range))
-            .fold(base, |style, index| style.patch(spans[*index].1))
+            .last()
+            .map_or(base, |active| base.patch(active.style))
+    }
+
+    fn enter(&mut self, index: usize) {
+        let (span, style) = &self.spans[index];
+        let (below, earliest_end) = self
+            .active
+            .last()
+            .map_or((Style::default(), usize::MAX), |active| {
+                (active.style, active.earliest_end)
+            });
+        self.active.push(Active {
+            index,
+            style: below.patch(*style),
+            earliest_end: earliest_end.min(span.end),
+        });
     }
 }
 
@@ -953,12 +991,6 @@ fn wrap_cell(atoms: Vec<CellAtom>, width: usize) -> Vec<Vec<CellAtom>> {
 
 /// `safe_text` without allocating for the common, already-safe case.
 fn safe(text: &str) -> Cow<'_, str> {
-    let unsafe_char = |c: char| {
-        matches!(
-            c,
-            '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        )
-    };
     if text.chars().any(unsafe_char) {
         Cow::Owned(safe_text(text))
     } else {
@@ -988,5 +1020,57 @@ mod tests {
         assert_eq!(leading_markers("plain"), 0);
         assert_eq!(leading_markers("-not a list"), 0);
         assert_eq!(leading_markers("1234567890. no"), 0);
+    }
+
+    #[test]
+    fn sweeping_matches_patching_every_overlapping_span_in_order() {
+        use ratatui::style::{Color, Modifier};
+        // Deterministic spans that nest, cross, tie, and are empty.
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let colors = [Color::Red, Color::Green, Color::Blue, Color::Yellow];
+        for _ in 0..500 {
+            let count = next(16);
+            let mut spans: Vec<(Range<usize>, Style)> = (0..count)
+                .map(|_| {
+                    let start = next(48);
+                    let range = start..start + next(24);
+                    let style = match next(3) {
+                        0 => Style::default().fg(colors[next(4)]),
+                        1 => Style::default().add_modifier(Modifier::BOLD),
+                        _ => Style::default()
+                            .remove_modifier(Modifier::BOLD)
+                            .bg(colors[next(4)]),
+                    };
+                    (range, style)
+                })
+                .collect();
+            spans.sort_by_key(|(range, _)| range.start);
+            let mut sweep = Sweep {
+                spans: &spans,
+                next: 0,
+                active: Vec::new(),
+            };
+            let base = Style::default().fg(Color::White);
+            let mut offset = 0;
+            while offset < 80 {
+                let range = offset..offset + next(4);
+                let expected = spans
+                    .iter()
+                    .filter(|(span, _)| overlaps(span, &range))
+                    .fold(base, |style, (_, span)| style.patch(*span));
+                assert_eq!(
+                    sweep.style(base, &range),
+                    expected,
+                    "{spans:?} at {range:?}"
+                );
+                offset = range.end.max(offset + 1);
+            }
+        }
     }
 }
