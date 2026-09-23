@@ -1553,15 +1553,38 @@ impl App {
             }
         }
         if self.document.text().is_empty() && self.markdown && height > 0 {
-            frame.buffer_mut().set_stringn(
+            let width = usize::from(self.viewport.width);
+            let buffer = frame.buffer_mut();
+            buffer.set_stringn(
                 self.viewport.x,
                 self.viewport.y,
                 "Start writing…",
-                usize::from(self.viewport.width),
+                width,
                 document_style()
                     .fg(colors.muted)
                     .add_modifier(Modifier::ITALIC),
             );
+            // Only an empty page offers a way in; written pages stay quiet.
+            if height > 2 {
+                let mut x = self.viewport.x;
+                for (key, action) in [("F2", "commands"), ("Ctrl+O", "open"), ("F1", "help")] {
+                    let room = usize::from(self.viewport.right().saturating_sub(x));
+                    let label = format!("{key} {action}   ");
+                    if UnicodeWidthStr::width(label.as_str()) > room {
+                        break;
+                    }
+                    let quiet = document_style().fg(colors.muted);
+                    buffer.set_string(
+                        x,
+                        self.viewport.y + 2,
+                        key,
+                        quiet.add_modifier(Modifier::BOLD),
+                    );
+                    let after = x + UnicodeWidthStr::width(key) as u16 + 1;
+                    buffer.set_string(after, self.viewport.y + 2, action, quiet);
+                    x += UnicodeWidthStr::width(label.as_str()) as u16;
+                }
+            }
         }
         self.draw_scrollbar(frame, area, height);
         if show_cursor
