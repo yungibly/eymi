@@ -1631,19 +1631,42 @@ impl App {
     }
 
     /// A thin thumb on the editor's right edge, only when content overflows.
+    /// While Find is open, the track also marks where matches are.
     fn draw_scrollbar(&self, frame: &mut Frame, area: Rect, height: usize) {
         let total = self.projection.rows.len();
         if height == 0 || total <= height || area.width < 3 {
             return;
         }
+        let colors = palette();
         let thumb = (height * height / total).clamp(1, height);
         let top = (self.scroll * height).div_ceil(total).min(height - thumb);
         let x = area.right() - 1;
-        let style = document_style().fg(palette().faint);
+        let buffer = frame.buffer_mut();
         for y in top..top + thumb {
-            frame
-                .buffer_mut()
-                .set_string(x, self.viewport.y + y as u16, "▐", style);
+            buffer.set_string(
+                x,
+                self.viewport.y + y as u16,
+                "▐",
+                document_style().fg(colors.faint),
+            );
+        }
+        if !matches!(self.overlay, Overlay::Search { .. }) {
+            return;
+        }
+        let current = self.search.current(self.document.selection());
+        for (index, range) in self.search.matches.iter().enumerate() {
+            let y = self.projection.cursor(range.start).0 * height / total;
+            let color = if current == Some(index) {
+                colors.search_active
+            } else {
+                colors.search
+            };
+            buffer.set_string(
+                x,
+                self.viewport.y + y as u16,
+                "▐",
+                document_style().fg(color),
+            );
         }
     }
 
@@ -3228,6 +3251,37 @@ mod tests {
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "one\r\ntwo");
         assert_eq!(app.document.selected_text(), "one\r\ntwo");
+    }
+
+    #[test]
+    fn scroll_track_marks_matches_only_while_find_is_open() {
+        let source = (0..60)
+            .map(|line| if line % 20 == 5 { "needle\n" } else { "hay\n" })
+            .collect::<String>();
+        let mut app = App::new(source, None, true);
+        let track = |app: &App, terminal: &Terminal<TestBackend>| -> Vec<Color> {
+            (app.viewport.y..app.viewport.bottom())
+                .map(|y| terminal.backend().buffer()[(79, y)].fg)
+                .filter(|fg| *fg != palette().foreground)
+                .collect()
+        };
+        let idle = draw(&mut app, 80, 24);
+        assert!(!track(&app, &idle).contains(&palette().search));
+        search(&mut app, "needle", false);
+        let open = draw(&mut app, 80, 24);
+        let marks = track(&app, &open);
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|fg| **fg == palette().search_active)
+                .count(),
+            1
+        );
+        assert_eq!(
+            marks.iter().filter(|fg| **fg == palette().search).count(),
+            2
+        );
+        assert!(!app.document.is_dirty());
     }
 
     #[test]
