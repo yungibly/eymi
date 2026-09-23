@@ -1925,9 +1925,14 @@ impl App {
     fn caret_line_column(&self) -> (usize, usize) {
         let text = self.document.text();
         let head = self.document.selection().head;
-        let line = text[..head]
-            .graphemes(true)
-            .filter(|g| matches!(*g, "\r" | "\n" | "\r\n"))
+        // CRLF is one grapheme, so count LF and lone CR bytes.
+        let bytes = &text.as_bytes()[..head];
+        let line = bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, byte)| {
+                **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+            })
             .count()
             + 1;
         let line_start = text[..head].rfind(['\n', '\r']).map_or(0, |i| i + 1);
