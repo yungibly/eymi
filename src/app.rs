@@ -1365,7 +1365,10 @@ impl App {
         // Source and code views number their lines; live prose is a column.
         let digits = self.gutter_digits(area.width);
         let (margin, prose_width) = if self.live {
-            let width = area.width.saturating_sub(2).min(88);
+            // Two cells each side leave room for heading marks and code
+            // surfaces that hang into the margin.
+            let gutter = if area.width >= 48 { 4 } else { 2 };
+            let width = area.width.saturating_sub(gutter).min(88);
             (area.width.saturating_sub(width) / 2, width)
         } else {
             let margin = if digits > 0 { digits + 2 } else { 1 };
