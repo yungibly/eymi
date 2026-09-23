@@ -130,6 +130,25 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- **Rendering and chrome checkpoint**, September 22, 2026, unreleased on
+  `main`: **362 tests** pass with both Rust 1.98.0 and Rust 1.89.0 (70 core,
+  281 app/helpers, 6 CLI, 5 real-process PTY), with formatting and strict
+  all-target Clippy. New coverage includes projection invariants over every
+  caret and several widths of a document using every construct, table grids
+  and fallbacks, code surfaces and fences, heading bands, hanging indents,
+  alerts, soft-wrap spaces, 41-language highlighting with segment and
+  fuzzing invariants, contrast for every new role in all 624 themes, the bar
+  caret's restoration, and dialog fit rules shared with key handling.
+- The same debug executable, SHA-256
+  `451efe6f2aa1b7d6be976b5c83b71f25d13546c7e6ab74484134da32b7754e76`, passes
+  **567 terminal assertions over 119 captures**: 351 across the eight dark
+  suites in `target/visual-polish-final-dark/`, 21 light captures in
+  `target/visual-polish-final-light/`, 166 Nerd Font chrome assertions in
+  `target/visual-polish-final-nerd/`, and 29 in the new rendering suite in
+  `target/visual-polish-rendering/`. Only the three known original-Unicode
+  PNG exports fail. A 100 KB document lays out in about 10 ms in an
+  optimized build. Native Ghostty rendering, IME, and native clipboard
+  remain manual checks.
 - **Public release `v0.1.0`**, September 22, 2026, ships commit `306dd12`.
   [CI](https://github.com/yungibly/eymi/actions/runs/35737489994) passes all four
   Linux/macOS × stable/1.89 jobs. The

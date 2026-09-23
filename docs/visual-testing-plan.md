@@ -1,5 +1,27 @@
 # Visual testing and a quieter interface
 
+## September 22 rendering and chrome checkpoint
+
+Live view now renders Markdown structure through a block-aware projection:
+rounded table grids, code and front-matter surfaces with language tabs and
+syntax highlighting, level-tinted heading bands with margin marks, titled
+alerts, rules, and struck checked tasks. The chrome drops the wordmark and
+shares the tab row with the outline's header; palettes, pickers, the file
+browser, dialogs, and Help use rounded panels with key hints in their
+borders. Code files and source view gain line numbers, a cursor line, and
+indent guides; 41 languages are highlighted by a small built-in lexer.
+
+A new rendering suite checks those constructs in real cells at 120×40 and
+80×24, including disclosure on click, numbered source view, and exact saved
+bytes. Final runs total 567 passing assertions over 119 captures from one
+binary: all nine dark suites, light captures, and the chrome suite with
+Nerd Font icons. The three PNG failures are the known combining-grapheme
+fixture limit. Paths and the executable hash are in the
+[verification record](prototype-checks.md#verification-record).
+
+Variable-size headings remain deferred: Kitty renders the OSC 66 text
+sizing protocol, but Ghostty 1.3.1 only parses it.
+
 ## September 22 Eymi release checkpoint
 
 The renamed Eymi executable adds a clickable new-document button, fuzzy
