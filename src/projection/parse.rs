@@ -67,6 +67,7 @@ pub struct Parsed {
     pub snapshot: MarkdownSnapshot,
     pub theme: Theme,
     pub icons: IconSet,
+    pub(super) markdown: bool,
     /// Sorted by start; later spans refine earlier ones.
     pub(super) styles: Vec<(Range<usize>, Style)>,
     /// Sorted and nonoverlapping, on grapheme boundaries.
@@ -83,6 +84,7 @@ impl Parsed {
             snapshot,
             theme: theme::current_theme(),
             icons: icons::current(),
+            markdown,
             styles: Vec::new(),
             decorations: Vec::new(),
             surfaces: Vec::new(),

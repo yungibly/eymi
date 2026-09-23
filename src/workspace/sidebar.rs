@@ -9,6 +9,7 @@ use ratatui::{
     style::Modifier,
     widgets::{Block, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Heading {
@@ -71,8 +72,12 @@ pub(super) struct Sidebar {
 }
 
 impl Sidebar {
-    pub fn visible(&self, area: Rect) -> bool {
-        area.width >= 60 && area.height >= 8 && self.preference.unwrap_or(area.width >= 110)
+    /// Automatic visibility outlines only Markdown; an explicit choice holds
+    /// for every document.
+    pub fn visible(&self, area: Rect, markdown: bool) -> bool {
+        area.width >= 60
+            && area.height >= 8
+            && self.preference.unwrap_or(markdown && area.width >= 110)
     }
 
     pub fn invalidate(&mut self) {
@@ -117,16 +122,17 @@ impl Sidebar {
             .min(self.headings.len().saturating_sub(1));
     }
 
+    /// `area` starts on the tab row, which carries the sidebar's header.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, caret: usize) {
         self.area = area;
         self.hits.clear();
-        if area.width == 0 || area.height == 0 {
+        if area.width < 2 || area.height == 0 {
             return;
         }
         let colors = chrome_palette();
         frame.render_widget(Block::default().style(colors.sidebar.style()), area);
         let border = if self.focused {
-            colors.sidebar.foreground
+            colors.tab_indicator
         } else {
             colors.separator
         };
@@ -140,17 +146,27 @@ impl Sidebar {
         }
         let icon = icons::current().outline();
         let title = if icon.is_empty() {
-            "  Outline".to_owned()
+            " Outline".to_owned()
         } else {
-            format!("  {icon} Outline")
+            format!(" {icon} Outline")
         };
+        let inner = area.width - 1;
         frame.render_widget(
-            Paragraph::new(clipped(&title, area.width.saturating_sub(1) as usize))
-                .style(colors.sidebar.style().add_modifier(Modifier::BOLD)),
-            Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+            Paragraph::new(clipped(&title, usize::from(inner))).style(
+                colors
+                    .sidebar
+                    .style()
+                    .fg(if self.focused {
+                        colors.tab_indicator
+                    } else {
+                        colors.sidebar.foreground
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(area.x, area.y, inner, 1),
         );
-        let top = area.y + 2;
-        let height = usize::from(area.height.saturating_sub(2));
+        let top = area.y + 1;
+        let height = usize::from(area.height.saturating_sub(1));
         self.selected = self.selected.min(self.headings.len().saturating_sub(1));
         let current = self
             .headings
@@ -167,17 +183,12 @@ impl Sidebar {
         self.scroll = self.scroll.min(self.headings.len().saturating_sub(height));
         if self.headings.is_empty() && height > 0 {
             frame.render_widget(
-                Paragraph::new("  No headings")
+                Paragraph::new(" No headings")
                     .style(colors.sidebar.style().fg(colors.sidebar_muted)),
-                Rect::new(area.x, top, area.width.saturating_sub(1), 1),
+                Rect::new(area.x, top, inner, 1),
             );
         }
-        let base_level = self
-            .headings
-            .iter()
-            .map(|heading| heading.level)
-            .min()
-            .unwrap_or(1);
+        let guides = tree(&self.headings);
         for (index, heading) in self
             .headings
             .iter()
@@ -190,32 +201,97 @@ impl Sidebar {
             } else {
                 current == Some(index)
             };
-            let style = if selected {
-                colors.tab_active.style().add_modifier(Modifier::BOLD)
+            let (guide, depth) = &guides[index];
+            let base = if selected {
+                colors.tab_active.style()
             } else {
-                colors.sidebar.style().fg(colors.sidebar_muted)
+                colors.sidebar.style()
             };
-            let indent = "  ".repeat(usize::from(heading.level.saturating_sub(base_level)).min(3));
+            let text = if selected {
+                base.add_modifier(Modifier::BOLD)
+            } else if *depth == 0 {
+                base
+            } else {
+                base.fg(colors.sidebar_muted)
+            };
+            let row = Rect::new(area.x, top + (index - self.scroll) as u16, inner, 1);
+            frame.render_widget(Block::default().style(base), row);
+            let buffer = frame.buffer_mut();
             let marker = if selected { "▎" } else { " " };
-            let label = format!("{marker} {indent}{}", heading.title);
-            let row = Rect::new(
-                area.x,
-                top + (index - self.scroll) as u16,
-                area.width.saturating_sub(1),
-                1,
-            );
-            frame.render_widget(
-                Paragraph::new(clipped(&label, row.width as usize)).style(style),
-                row,
-            );
+            buffer.set_string(row.x, row.y, marker, base.fg(colors.tab_indicator));
+            let guide = clipped(guide, usize::from(row.width.saturating_sub(1)));
+            buffer.set_string(row.x + 1, row.y, &guide, base.fg(colors.separator));
+            let x = row.x + 1 + UnicodeWidthStr::width(guide.as_str()) as u16;
+            let room = usize::from(row.right().saturating_sub(x));
+            buffer.set_stringn(x, row.y, clipped(&heading.title, room), room, text);
             self.hits.push((row, Target::Heading(index)));
         }
     }
 }
 
+/// Tree guides and nesting depth for each heading. Depth follows nesting,
+/// so a skipped level (H1 then H3) still reads as one step deeper.
+fn tree(headings: &[Heading]) -> Vec<(String, usize)> {
+    let mut stack: Vec<u8> = Vec::new();
+    let depths: Vec<usize> = headings
+        .iter()
+        .map(|heading| {
+            while stack.last().is_some_and(|level| *level >= heading.level) {
+                stack.pop();
+            }
+            stack.push(heading.level);
+            stack.len() - 1
+        })
+        .collect();
+    let has_sibling: Vec<bool> = (0..depths.len())
+        .map(|index| {
+            depths[index + 1..]
+                .iter()
+                .take_while(|depth| **depth >= depths[index])
+                .any(|depth| *depth == depths[index])
+        })
+        .collect();
+    let mut open: Vec<bool> = Vec::new();
+    depths
+        .iter()
+        .zip(&has_sibling)
+        .map(|(depth, sibling)| {
+            open.truncate(*depth);
+            let mut guide: String = open
+                .iter()
+                .skip(1)
+                .map(|open| if *open { "│ " } else { "  " })
+                .collect();
+            if *depth > 0 {
+                guide.push_str(if *sibling { "├ " } else { "└ " });
+            }
+            open.push(*sibling);
+            (guide, *depth)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outline_guides_follow_nesting_and_last_siblings() {
+        let headings: Vec<_> = [1, 2, 3, 2, 3, 3, 1, 4]
+            .into_iter()
+            .enumerate()
+            .map(|(offset, level)| Heading {
+                title: String::new(),
+                level,
+                offset,
+            })
+            .collect();
+        let guides: Vec<_> = tree(&headings)
+            .into_iter()
+            .map(|(guide, _)| guide)
+            .collect();
+        assert_eq!(guides, ["", "├ ", "│ └ ", "└ ", "  ├ ", "  └ ", "", "└ "]);
+    }
     #[test]
     fn outline_uses_markdown_semantics_and_original_offsets() {
         let source = "\u{feff}# Café **bold** [link](url)\r\n\r\n```md\r\n# hidden\r\n```\r\n\r\nSetext 界\r\n------\r\n\r\n    # code\r\n\r\n## e\u{301}nd\r\n";

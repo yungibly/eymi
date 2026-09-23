@@ -9,8 +9,9 @@ mod sidebar;
 mod state_tests;
 mod tabs;
 use crate::theme::{Theme, current_theme};
+pub(crate) use crate::ui::clipped;
 use crate::{
-    app::{App, chrome_active, chrome_muted, chrome_style},
+    app::App,
     browser::{Action as BrowserAction, Browser},
     clipboard::Clipboard,
     projection::safe_text,
@@ -24,7 +25,8 @@ use picker::{Action as ChoiceAction, Picker};
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    style::Modifier,
+    text::{Line, Span},
 };
 use sidebar::{Sidebar, Target};
 use std::time::Instant;
@@ -340,7 +342,7 @@ impl Workspace {
     }
 
     fn toggle_sidebar(&mut self, focus: bool) {
-        let visible = self.sidebar.visible(self.area);
+        let visible = self.sidebar.visible(self.area, self.editor().is_markdown());
         if focus && visible && !self.sidebar.focused {
             self.editor_mut().deactivate();
             self.sidebar.focused = true;
@@ -351,7 +353,7 @@ impl Workspace {
             self.sidebar.focused = focus && !visible;
             self.layout_valid = false;
         }
-        if !self.sidebar.visible(self.area) {
+        if !self.sidebar.visible(self.area, self.editor().is_markdown()) {
             self.sidebar.focused = false;
         }
         if self.sidebar.focused {
@@ -449,7 +451,7 @@ impl Workspace {
         self.choice = Some(Choice {
             picker: Picker::new(
                 "Themes",
-                "↑↓ Preview · Enter Apply · Esc Cancel",
+                "↑↓ preview · ⏎ apply · esc cancel",
                 entries,
                 selected,
             ),
@@ -534,7 +536,7 @@ impl Workspace {
             self.layout_valid = false;
             self.tab_hits.clear();
             self.sidebar.invalidate();
-            if !self.sidebar.visible(self.area) {
+            if !self.sidebar.visible(self.area, self.editor().is_markdown()) {
                 self.sidebar.focused = false;
             }
         }
@@ -595,7 +597,7 @@ impl Workspace {
             return;
         }
         if self.pending.as_ref().is_some_and(|pending| !pending.saving) {
-            if (self.area.width < 12 || self.area.height < 5)
+            if !crate::ui::dialog_fits(self.area)
                 && matches!(&event, Event::Key(key) if key.code != KeyCode::Esc)
             {
                 return;
@@ -826,6 +828,20 @@ impl Workspace {
     }
 
     fn label(&self, index: usize) -> String {
+        let dirty = self.tabs[index].editor.document.is_dirty();
+        format!(
+            "{}{} ",
+            if dirty {
+                format!("{} ", tabs::DIRTY)
+            } else {
+                " ".into()
+            },
+            self.name(index)
+        )
+    }
+
+    /// The tab's display name, disambiguated by parent directory when needed.
+    fn name(&self, index: usize) -> String {
         let tab = &self.tabs[index];
         let filename = tab
             .editor
@@ -859,15 +875,7 @@ impl Workspace {
                     })
                     .unwrap_or_else(|| format!("Untitled {}.md", tab.number))
             });
-        format!(
-            "{}{} ",
-            if tab.editor.document.is_dirty() {
-                "* "
-            } else {
-                " "
-            },
-            safe_text(&filename)
-        )
+        safe_text(&filename)
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
@@ -875,7 +883,7 @@ impl Workspace {
         self.area = area;
         self.layout_valid = true;
         self.refresh_outline();
-        let sidebar_visible = self.sidebar.visible(area);
+        let sidebar_visible = self.sidebar.visible(area, self.editor().is_markdown());
         if !sidebar_visible {
             self.sidebar.focused = false;
         }
@@ -898,41 +906,21 @@ impl Workspace {
         self.editor_mut().draw_in(frame, editor_area, show_cursor);
         self.tab_hits.clear();
         self.sidebar.invalidate();
-        if sidebar_visible {
-            let sidebar_area = Rect::new(
-                area.x,
-                area.y + 1,
-                sidebar_width,
-                area.height.saturating_sub(2),
-            );
-            let caret = self.editor().document.selection().head;
-            self.sidebar.draw(frame, sidebar_area, caret);
-        }
         let labels: Vec<_> = (0..self.tabs.len())
-            .map(|index| {
-                let label = self.label(index);
-                let dirty = self.tabs[index].editor.document.is_dirty();
-                let name = label.trim();
-                let name = if dirty {
-                    name.strip_prefix("* ").unwrap_or(name)
-                } else {
-                    name
-                };
-                let icon = crate::icons::current().file(self.tabs[index].editor.is_markdown());
-                let text = format!(
-                    "{}{}{}",
-                    if dirty { "* " } else { "" },
-                    if icon.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{icon} ")
-                    },
-                    name
-                );
-                tabs::TabLabel { text, dirty }
+            .map(|index| tabs::TabLabel {
+                name: self.name(index),
+                icon: crate::icons::current().file(self.tabs[index].editor.is_markdown()),
+                dirty: self.tabs[index].editor.document.is_dirty(),
             })
             .collect();
         self.tab_hits = tabs::draw(frame, area, sidebar_width, &labels, self.active);
+        if sidebar_visible {
+            // The sidebar's header shares the tab row.
+            let sidebar_area =
+                Rect::new(area.x, area.y, sidebar_width, area.height.saturating_sub(1));
+            let caret = self.editor().document.selection().head;
+            self.sidebar.draw(frame, sidebar_area, caret);
+        }
         self.editor().draw_footer(frame, area);
         if self.editor().has_modal() {
             self.editor().draw_overlay(frame);
@@ -942,21 +930,37 @@ impl Workspace {
         if let Some(pending) = &self.pending
             && !pending.saving
         {
-            let body = format!(
-                "{}\n\nSave changes {}?\n\nY: Save   N: Discard   Esc: Cancel\n\n{}",
-                self.label(self.active).trim(),
-                if pending.intent == Intent::Quit {
-                    "before quitting"
+            let quitting = pending.intent == Intent::Quit;
+            let muted = crate::ui::muted();
+            let mut body = vec![
+                Line::from(Span::styled(
+                    self.name(self.active),
+                    crate::ui::surface().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(if quitting {
+                    "Save changes before quitting?"
                 } else {
-                    "before closing"
-                },
-                if pending.intent == Intent::Quit {
-                    "Other dirty tabs will be checked next.\nCancel keeps all tabs, including earlier discard choices."
-                } else {
-                    "Only this document will close."
-                }
+                    "Save changes before closing?"
+                }),
+            ];
+            if quitting {
+                body.push(Line::from(Span::styled(
+                    "Other unsaved tabs are checked next; cancelling keeps every tab.",
+                    muted,
+                )));
+            } else {
+                body.push(Line::from(Span::styled(
+                    "Only this document will close.",
+                    muted,
+                )));
+            }
+            crate::ui::dialog(
+                frame,
+                "Unsaved document",
+                &body,
+                &[("Y", "Save"), ("N", "Discard"), ("Esc", "Cancel")],
+                72,
             );
-            popup(frame, " Unsaved document ", &body);
         }
         if let Some(browser) = &mut self.browser {
             browser.draw(frame);
@@ -968,34 +972,6 @@ impl Workspace {
             choice.picker.draw(frame);
         }
     }
-}
-
-pub(crate) fn popup(frame: &mut Frame, title: &str, body: &str) {
-    let area = frame.area();
-    let width = area.width.saturating_sub(2).min(76);
-    let height = area.height.saturating_sub(2).min(12);
-    if area.width < 12 || area.height < 5 {
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new("Resize to confirm · Esc cancels").style(chrome_style()),
-            area,
-        );
-        return;
-    }
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(body)
-            .wrap(Wrap { trim: false })
-            .style(chrome_style())
-            .block(Block::default().borders(Borders::ALL).title(title)),
-        rect,
-    );
 }
 
 /// Keep the basename visible; use spare dialog space for its nearest parent.
@@ -1019,27 +995,6 @@ fn compact_path(path: &Path, width: usize) -> String {
     } else {
         clipped(&name, width)
     }
-}
-
-pub(crate) fn clipped(text: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(text) <= max {
-        return text.into();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut output = String::new();
-    let mut used = 0;
-    for grapheme in text.graphemes(true) {
-        let width = UnicodeWidthStr::width(grapheme);
-        if used + width > max - 1 {
-            break;
-        }
-        output.push_str(grapheme);
-        used += width;
-    }
-    output.push('…');
-    output
 }
 
 /// Resolve existing aliases and normalize new targets through their nearest
@@ -1427,7 +1382,7 @@ mod tests {
             );
         }
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
-        assert!(snapshot.lines().next().unwrap().contains("* Untitled 1.md"));
+        assert!(snapshot.lines().next().unwrap().contains("Untitled 1.md ●"));
         assert_eq!(snapshot.matches("Untitled 1.md").count(), 1);
         assert!(snapshot.lines().nth(1).unwrap().contains("draft"));
         assert!(snapshot.contains("MARKDOWN"));
@@ -1500,7 +1455,7 @@ mod tests {
                     .0;
                 assert!(
                     (active.x..active.right())
-                        .any(|x| terminal.backend().buffer()[(x, 0)].symbol() == "*"),
+                        .any(|x| terminal.backend().buffer()[(x, 0)].symbol() == tabs::DIRTY),
                     "width {width}, {icons:?}"
                 );
             }
@@ -2053,8 +2008,8 @@ mod tests {
             .iter()
             .find(|cell| cell.symbol() == "é")
             .unwrap();
-        assert_eq!(cell.bg, chrome_active().bg.unwrap());
-        assert!(cell.modifier.contains(Modifier::BOLD));
+        assert_eq!(cell.bg, crate::theme::palette().selection);
+        assert_eq!(cell.fg, crate::theme::palette().selection_text);
         app.handle_event(Event::Paste("save".into()));
         assert_eq!(app.palette.as_ref().unwrap().query.text(), "save");
         assert!(app.editor().document.text().is_empty());
@@ -2139,7 +2094,7 @@ mod tests {
             let hit = hits[0].0;
             assert_eq!(
                 filtered.backend().buffer()[(hit.x - 1, hit.bottom())].symbol(),
-                "└"
+                "╰"
             );
             assert!(
                 filtered
@@ -2192,12 +2147,12 @@ mod tests {
         let cursor = line.get_cursor_position().unwrap();
         assert_eq!(cursor.y, query_y);
         assert_eq!(
-            line.backend().buffer()[(cursor.x - 2, query_y - 1)].symbol(),
-            "┌"
+            line.backend().buffer()[(cursor.x - 4, query_y - 1)].symbol(),
+            "╭"
         );
         assert_eq!(
-            line.backend().buffer()[(cursor.x - 2, query_y + 4)].symbol(),
-            "└"
+            line.backend().buffer()[(cursor.x - 4, query_y + 4)].symbol(),
+            "╰"
         );
         app.handle_event(Event::Paste("1".into()));
         draw(&mut app, 80, 24);

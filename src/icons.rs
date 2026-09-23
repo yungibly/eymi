@@ -53,6 +53,19 @@ impl IconSet {
             (Self::Nerd, false) => "\u{f15c}",
         }
     }
+    /// A file's icon from its name, falling back to a generic document.
+    pub fn path(self, path: &std::path::Path) -> &'static str {
+        let markdown = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "md" | "markdown" | "mdown" | "mkd" | "mdx"
+                )
+            });
+        self.file(markdown)
+    }
     pub fn outline(self) -> &'static str {
         match self {
             Self::Plain => "",

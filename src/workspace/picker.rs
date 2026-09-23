@@ -1,11 +1,11 @@
 //! Searchable choices with geometry-gated acceptance and a separate query document.
-use super::{chrome_active, chrome_muted, chrome_style, clipped};
+use crate::ui;
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use eymi::Document;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -207,7 +207,7 @@ impl Picker {
         if area.width < 24 || area.height < 7 {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Resize to choose\nEsc: cancel").style(chrome_style()),
+                Paragraph::new("Resize to choose\nEsc: cancel").style(ui::surface()),
                 area,
             );
             return;
@@ -218,7 +218,7 @@ impl Picker {
         self.selected = self.selected.min(matches.len().saturating_sub(1));
         let height = matches
             .len()
-            .saturating_add(5)
+            .saturating_add(4)
             .clamp(7, usize::from(max_height)) as u16;
         let rect = Rect::new(
             area.x + (area.width - width) / 2,
@@ -226,122 +226,57 @@ impl Picker {
             width,
             height,
         );
-        frame.render_widget(Clear, rect);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} · {} ", self.title, matches.len()))
-                .style(chrome_style()),
-            rect,
-        );
-        let field = Rect::new(rect.x + 2, rect.y + 1, width - 4, 1);
-        frame.render_widget(Block::default().style(chrome_muted()), field);
-        let caret = self.query.selection().head;
-        let mut start = 0;
-        while UnicodeWidthStr::width(&self.query.text()[start..caret]) >= usize::from(field.width) {
-            let Some(grapheme) = self.query.text()[start..caret].graphemes(true).next() else {
-                break;
-            };
-            start += grapheme.len();
-        }
-        if self.query.text().is_empty() {
-            frame.render_widget(
-                Paragraph::new("Type to filter…").style(chrome_muted()),
-                field,
-            );
-        } else {
-            let selection = self.query.selection().range();
-            let mut column = field.x;
-            for (index, grapheme) in self.query.text()[start..].grapheme_indices(true) {
-                let cells = UnicodeWidthStr::width(grapheme) as u16;
-                if column + cells > field.right() {
-                    break;
-                }
-                let selected = start + index < selection.end
-                    && selection.start < start + index + grapheme.len();
-                frame.buffer_mut().set_string(
-                    column,
-                    field.y,
-                    grapheme,
-                    if selected {
-                        chrome_active()
-                    } else {
-                        chrome_muted()
-                    },
-                );
-                column += cells;
-            }
-        }
-        frame.set_cursor_position((
-            field.x + UnicodeWidthStr::width(&self.query.text()[start..caret]) as u16,
-            field.y,
-        ));
-        let available = usize::from(height - 5);
+        let count = format!("{}/{}", matches.len(), self.entries.len());
+        let inner = ui::panel(frame, rect, self.title, Some(&count));
+        let field = Rect::new(inner.x + 1, inner.y, inner.width - 2, 1);
+        let caret = ui::prompt(frame, field, &self.query, "Type to filter…");
+        frame.set_cursor_position(caret);
+        ui::divider(frame, rect, rect.y + 2);
+        // The selected entry's full detail rides on the divider.
         if self.details
             && let Some(&index) = matches.get(self.selected)
+            && !self.entries[index].1.is_empty()
         {
-            frame.render_widget(
-                Paragraph::new(clipped_suffix(
-                    &self.entries[index].1,
-                    usize::from(width - 4),
-                ))
-                .style(chrome_muted()),
-                Rect::new(rect.x + 2, rect.y + 2, width - 4, 1),
+            let detail = format!(
+                " {} ",
+                clipped_suffix(&self.entries[index].1, usize::from(width - 8))
             );
+            frame
+                .buffer_mut()
+                .set_string(rect.x + 2, rect.y + 2, detail, ui::muted());
         }
+        let available = usize::from(height - 4);
         let first = self.selected.saturating_sub(available.saturating_sub(1));
+        let query = self.query.text().to_owned();
         for (row, &index) in matches.iter().skip(first).take(available).enumerate() {
-            let row_rect = Rect::new(rect.x + 1, rect.y + 3 + row as u16, width - 2, 1);
+            let row_rect = Rect::new(inner.x, rect.y + 3 + row as u16, inner.width, 1);
             let (name, hint) = &self.entries[index];
-            let style = if first + row == self.selected {
-                chrome_active()
-            } else {
-                chrome_muted()
-            };
-            let hint_width = UnicodeWidthStr::width(hint.as_str());
-            let show_hint =
-                row_rect.width as usize > UnicodeWidthStr::width(name.as_str()) + hint_width + 4;
-            let name_width = row_rect.width as usize - if show_hint { hint_width + 3 } else { 1 };
-            frame.render_widget(
-                Paragraph::new(format!(" {}", clipped(name, name_width))).style(style),
+            let hint = if self.details { "" } else { hint.as_str() };
+            ui::item(
+                frame,
                 row_rect,
+                name,
+                hint,
+                first + row == self.selected,
+                &query,
             );
-            if show_hint {
-                frame.buffer_mut().set_string(
-                    row_rect.right() - hint_width as u16 - 1,
-                    row_rect.y,
-                    hint,
-                    style,
-                );
-            }
             self.hits.push((row_rect, index));
         }
         if matches.is_empty() {
             frame.render_widget(
                 Paragraph::new(format!(
-                    " {}",
+                    "  {}",
                     if self.entries.is_empty() {
                         self.empty_message
                     } else {
                         "No matches"
                     }
                 ))
-                .style(chrome_muted()),
-                Rect::new(rect.x + 1, rect.y + 3, width - 2, 1),
+                .style(ui::muted()),
+                Rect::new(inner.x, rect.y + 3, inner.width, 1),
             );
         }
-        frame.render_widget(
-            Paragraph::new(clipped(
-                if UnicodeWidthStr::width(self.footer) <= (width - 4) as usize {
-                    self.footer
-                } else {
-                    "Enter: OK  Esc: back"
-                },
-                (width - 4) as usize,
-            ))
-            .style(chrome_muted()),
-            Rect::new(rect.x + 2, rect.bottom() - 2, width - 4, 1),
-        );
+        ui::hints(frame, rect, self.footer);
         self.ready = !self.hits.is_empty();
     }
 }

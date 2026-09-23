@@ -1,14 +1,13 @@
 //! A small command picker. Query edits always stay in its own document.
-use super::{chrome_active, chrome_muted, chrome_style, clipped};
+use super::clipped;
+use crate::ui;
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use eymi::Document;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
 };
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Command {
@@ -284,7 +283,7 @@ impl Palette {
         if area.width < 12 || area.height < 5 {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Resize for commands\nEsc: close").style(chrome_style()),
+                Paragraph::new("Resize for commands\nEsc: close").style(ui::surface()),
                 area,
             );
             return;
@@ -304,129 +303,78 @@ impl Palette {
             width,
             height,
         );
-        frame.render_widget(Clear, rect);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(if self.line_mode {
-                    " Go to line "
-                } else {
-                    " Commands "
-                })
-                .style(chrome_style()),
+        let count = format!("{}/{}", commands.len(), Command::ALL.len());
+        let inner = ui::panel(
+            frame,
             rect,
+            if self.line_mode {
+                "Go to line"
+            } else {
+                "Commands"
+            },
+            (!self.line_mode).then_some(count.as_str()),
         );
-        let field = Rect::new(rect.x + 2, rect.y + 1, rect.width.saturating_sub(4), 1);
-        let caret = self.query.selection().head;
-        let mut start = 0;
-        while UnicodeWidthStr::width(&self.query.text()[start..caret])
-            >= usize::from(field.width).max(1)
-        {
-            let Some(grapheme) = self.query.text()[start..caret].graphemes(true).next() else {
-                break;
-            };
-            start += grapheme.len();
-        }
-        frame.render_widget(Block::default().style(chrome_muted()), field);
-        if self.query.text().is_empty() {
-            let placeholder = if self.line_mode {
+        let field = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1);
+        let caret = ui::prompt(
+            frame,
+            field,
+            &self.query,
+            if self.line_mode {
                 "Line number…"
             } else {
                 "Type to filter commands…"
-            };
-            frame.render_widget(
-                Paragraph::new(clipped(placeholder, field.width as usize)).style(chrome_muted()),
-                field,
-            );
-        } else {
-            let selection = self.query.selection().range();
-            let mut column = field.x;
-            for (index, grapheme) in self.query.text()[start..].grapheme_indices(true) {
-                let width = UnicodeWidthStr::width(grapheme) as u16;
-                if column + width > field.right() {
-                    break;
-                }
-                let selected = start + index < selection.end
-                    && selection.start < start + index + grapheme.len();
-                let style = if selected {
-                    chrome_active()
-                } else {
-                    chrome_muted()
-                };
-                frame
-                    .buffer_mut()
-                    .set_string(column, field.y, grapheme, style);
-                column += width;
-            }
-        }
+            },
+        );
         if field.width > 0 {
-            frame.set_cursor_position((
-                field.x + UnicodeWidthStr::width(&self.query.text()[start..caret]) as u16,
-                field.y,
-            ));
+            frame.set_cursor_position(caret);
         }
+        ui::divider(frame, rect, rect.y + 2);
         let available = usize::from(height.saturating_sub(4));
         self.ready = available > 0;
         if self.line_mode {
             frame.render_widget(
                 Paragraph::new(clipped(
-                    self.error.unwrap_or("Enter to jump · Esc to cancel"),
+                    self.error.unwrap_or("Enter jumps to the line"),
                     field.width as usize,
                 ))
-                .style(chrome_muted()),
-                Rect::new(field.x, field.y + 2, field.width, 1),
+                .style(if self.error.is_some() {
+                    ui::surface().fg(crate::theme::palette().warning)
+                } else {
+                    ui::muted()
+                }),
+                Rect::new(field.x, rect.y + 3, field.width, 1),
             );
         } else {
             self.selected = self.selected.min(commands.len().saturating_sub(1));
             let start = self.selected.saturating_sub(available.saturating_sub(1));
+            let query = self.query.text().to_owned();
             for (row, command) in commands.iter().skip(start).take(available).enumerate() {
-                let row_rect = Rect::new(rect.x + 1, rect.y + 3 + row as u16, rect.width - 2, 1);
-                let hint = command.shortcut();
-                let show_hint = row_rect.width as usize
-                    >= UnicodeWidthStr::width(command.label()) + hint.len() + 4;
-                let label_width = if show_hint {
-                    row_rect.width as usize - hint.len() - 3
-                } else {
-                    row_rect.width as usize - 1
-                };
-                let style = if start + row == self.selected {
-                    chrome_active()
-                } else {
-                    chrome_muted()
-                };
-                frame.render_widget(
-                    Paragraph::new(format!(" {}", clipped(command.label(), label_width)))
-                        .style(style),
+                let row_rect = Rect::new(inner.x, rect.y + 3 + row as u16, inner.width, 1);
+                ui::item(
+                    frame,
                     row_rect,
+                    command.label(),
+                    command.shortcut(),
+                    start + row == self.selected,
+                    &query,
                 );
-                if show_hint {
-                    frame.buffer_mut().set_string(
-                        row_rect.right() - hint.len() as u16 - 1,
-                        row_rect.y,
-                        hint,
-                        style,
-                    );
-                }
                 self.hits.push((row_rect, *command));
             }
             if commands.is_empty() {
                 frame.render_widget(
-                    Paragraph::new(" No matching commands").style(chrome_muted()),
-                    Rect::new(rect.x + 1, rect.y + 3, rect.width - 2, 1),
+                    Paragraph::new("  No matching commands").style(ui::muted()),
+                    Rect::new(inner.x, rect.y + 3, inner.width, 1),
                 );
             }
         }
-        frame.render_widget(
-            Paragraph::new(clipped(
-                if self.line_mode {
-                    " Enter Jump · Esc Close"
-                } else {
-                    " ↑↓ Select · Enter Run · Esc Close"
-                },
-                rect.width.saturating_sub(2) as usize,
-            ))
-            .style(chrome_muted()),
-            Rect::new(rect.x + 1, rect.bottom() - 1, rect.width - 2, 1),
+        ui::hints(
+            frame,
+            rect,
+            if self.line_mode {
+                "⏎ jump · esc close"
+            } else {
+                "↑↓ select · ⏎ run · esc close"
+            },
         );
     }
 }

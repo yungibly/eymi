@@ -156,7 +156,7 @@ fn eymi_command_branding_does_not_initialize_user_state() {
             "Eymi — a source-preserving Markdown editor".to_owned(),
         ),
         ("--version", format!("eymi {}", env!("CARGO_PKG_VERSION"))),
-        ("--snapshot", "eymi".to_owned()),
+        ("--snapshot", "Untitled 1.md".to_owned()),
     ] {
         let output = binary()
             .arg(argument)

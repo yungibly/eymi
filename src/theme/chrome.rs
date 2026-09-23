@@ -19,6 +19,8 @@ pub struct ChromePalette {
     pub tab_indicator: Color,
     pub status: ColorPair,
     pub status_accent: ColorPair,
+    /// A second solid badge, distinguishing Markdown source view.
+    pub status_alternate: ColorPair,
     pub status_secondary: ColorPair,
     pub status_warning: ColorPair,
 }
@@ -98,6 +100,7 @@ fn derive(palette: Palette) -> ChromePalette {
         // Preserve the actual theme accent as the small solid badge. Derive
         // its own ink; document foreground or reverse-video may be unreadable.
         status_accent: pair(palette.background, palette.accent),
+        status_alternate: pair(palette.background, palette.headings[1]),
         status_secondary: pair(palette.foreground, secondary_background),
         status_warning: pair(palette.warning, warning_background),
     }
@@ -119,6 +122,7 @@ mod tests {
                 ("active tab", c.tab_active),
                 ("status", c.status),
                 ("status accent", c.status_accent),
+                ("status alternate", c.status_alternate),
                 ("status secondary", c.status_secondary),
                 ("status warning", c.status_warning),
             ] {

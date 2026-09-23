@@ -376,7 +376,7 @@ fn recovery_restart(legacy: bool) {
     let mut crashed = Session::start_with_state("disk baseline\n", Some(state.path()));
     // Apply a familiar built-in theme through both searchable pickers.
     crashed.send(b"\x10theme\r");
-    crashed.until("theme picker", |s| count(&s.transcript, b"Preview") > 0);
+    crashed.until("theme picker", |s| count(&s.transcript, b"preview") > 0);
     crashed.send(b"\x1b[200~Catppuccin Mocha\x1b[201~\r");
     let settings = state
         .path()

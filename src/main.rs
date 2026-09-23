@@ -12,6 +12,7 @@ mod settings;
 mod simulation;
 mod terminal;
 mod theme;
+mod ui;
 mod workspace;
 
 use std::io::{self, IsTerminal};

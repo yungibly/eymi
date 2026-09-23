@@ -424,15 +424,22 @@ impl Layout<'_> {
         let end = line_end(source, start);
         let stop = next_line(source, end).max(start + 1);
         self.context = Context {
-            literal: !self.live,
+            literal: !parsed.markdown,
             content: start + leading_markers(&source[start..end]),
             first_row: self.rows.len() - 1,
             ..Context::default()
         };
+        let intersecting = |range: &Range<usize>| range.start < stop && range.end > start;
+        // Markdown source view wraps prose at words, code and tables by column,
+        // and draws no surfaces.
         if !self.live {
+            let code = advance(&parsed.surfaces, &mut self.cursors[0], start, |s| &s.range)
+                .is_some_and(|s| intersecting(&s.range));
+            let table = advance(&parsed.tables, &mut self.cursors[3], start, |t| &t.range)
+                .is_some_and(|t| intersecting(&t.range));
+            self.context.literal |= code || table;
             return;
         }
-        let intersecting = |range: &Range<usize>| range.start < stop && range.end > start;
         if let Some(surface) = advance(&parsed.surfaces, &mut self.cursors[0], start, |s| &s.range)
             .filter(|s| intersecting(&s.range))
         {

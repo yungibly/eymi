@@ -15,7 +15,7 @@ impl Workspace {
             .enumerate()
             .map(|(index, tab)| {
                 tab.editor.path().map_or_else(
-                    || self.label(index).trim().trim_start_matches("* ").to_owned(),
+                    || self.name(index),
                     |path| {
                         safe_text(
                             &path
@@ -46,7 +46,7 @@ impl Workspace {
                     format!(
                         "{}{}",
                         if tab.editor.document.is_dirty() {
-                            "* "
+                            "● "
                         } else {
                             ""
                         },
@@ -71,7 +71,7 @@ impl Workspace {
         self.choice = Some(Choice {
             picker: Picker::new(
                 "Open documents",
-                "↑↓ Choose · Enter Switch · Esc Cancel",
+                "↑↓ choose · ⏎ switch · esc cancel",
                 entries,
                 self.active,
             )
@@ -120,7 +120,7 @@ impl Workspace {
         self.choice = Some(Choice {
             picker: Picker::new(
                 "Headings",
-                "↑↓ Choose · Enter Jump · Esc Cancel",
+                "↑↓ choose · ⏎ jump · esc cancel",
                 entries,
                 selected,
             )
@@ -194,8 +194,9 @@ mod tests {
         key(&mut app, KeyCode::F(10));
         app.handle_event(Event::Paste("alpha nmd".into()));
         let frame = draw(&mut app, 80, 24);
-        assert!(frame.contains("Open documents ·"));
-        assert!(frame.contains("* alpha/docs/note.md"));
+        assert!(frame.contains("Open documents"));
+        assert!(frame.contains("1/2"));
+        assert!(frame.contains("● alpha/docs/note.md"));
         assert_eq!(app.active, 1, "filtering must not preview-switch documents");
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.active, 1);
@@ -258,14 +259,15 @@ mod tests {
         key(&mut app, KeyCode::F(11));
         app.handle_event(Event::Paste("rém".into()));
         let frame = draw(&mut app, 80, 24);
-        assert!(frame.contains("Headings · 2"));
+        assert!(frame.contains("Headings"));
+        assert!(frame.contains(" 2/"));
         assert_eq!(app.editor().document.selection(), selection);
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.editor().document.selection(), selection);
         key(&mut app, KeyCode::F(11));
         app.handle_event(Event::Paste("rém 9".into()));
         let frame = draw(&mut app, 80, 24);
-        assert!(frame.contains("Headings · 1"));
+        assert!(frame.contains(" 1/"));
         assert!(frame.contains("H2 · line 9"));
         key(&mut app, KeyCode::Enter);
         assert_eq!(

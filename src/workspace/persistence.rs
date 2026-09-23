@@ -290,7 +290,7 @@ impl Workspace {
         self.choice = Some(Choice {
             picker: Picker::new(
                 "Recover documents",
-                "Enter: recover copy · Esc: later",
+                "⏎ recover copy · esc later",
                 entries,
                 0,
             ),

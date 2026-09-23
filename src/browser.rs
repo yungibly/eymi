@@ -1,9 +1,10 @@
 //! A bounded, single-directory browser. It never recursively scans a workspace.
 use crate::{
-    app::{chrome_active, chrome_muted, chrome_style, draw_field},
+    app::draw_field,
     clipboard::Clipboard,
     projection::safe_text,
     search::{FieldMap, Focus},
+    ui,
     workspace::clipped,
 };
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
@@ -11,7 +12,8 @@ use eymi::Document;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, Borders, Clear, Paragraph},
+    style::Modifier,
+    widgets::{Clear, Paragraph},
 };
 use std::{
     fs,
@@ -137,7 +139,7 @@ impl Browser {
         } else if skipped > 0 {
             format!("{skipped} unreadable entries skipped; direct paths remain available.")
         } else {
-            "Enter opens · Tab edits path · Backspace goes up · Esc closes".into()
+            String::new()
         };
         Ok(())
     }
@@ -378,67 +380,72 @@ impl Browser {
         if !self.ready {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Open: enlarge window. Esc cancels.").style(chrome_style()),
+                Paragraph::new("Open: enlarge window. Esc cancels.").style(ui::surface()),
                 area,
             );
             return;
         }
-        let popup = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
-        frame.render_widget(Clear, popup);
-        frame.render_widget(
-            Block::default()
-                .style(chrome_style())
-                .borders(Borders::ALL)
-                .title(" Open file · 8 MiB maximum "),
-            popup,
+        let width = (area.width - 2).min(96);
+        let popup = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + 1,
+            width,
+            area.height - 2,
         );
-        let inner = Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2);
-        let width = usize::from(inner.width);
+        let count = format!(
+            "{} {}",
+            self.entries.len(),
+            if self.entries.len() == 1 {
+                "item"
+            } else {
+                "items"
+            }
+        );
+        let inner = ui::panel(frame, popup, "Open file", Some(&count));
+        let colors = crate::theme::palette();
+        let chrome = crate::theme::chrome_palette();
+        let field = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1);
         self.path_map = Some(draw_field(
             frame,
-            Rect::new(inner.x, inner.y, inner.width, 1),
-            "Path: ",
+            field,
+            "❯ ",
             &self.path,
             Focus::Query,
             self.path_focus,
             None,
         ));
-        self.hits
-            .push((Rect::new(inner.x, inner.y, inner.width, 1), Hit::Path));
+        self.hits.push((field, Hit::Path));
+        let toggle = |on: bool, name: &str| format!("{} {name}", if on { "●" } else { "○" });
         let controls = [
-            ("[Up]".to_owned(), Hit::Parent),
-            (
-                format!("[Hidden:{}]", if self.hidden { "on" } else { "off" }),
-                Hit::Hidden,
-            ),
-            (
-                format!("[All:{}]", if self.all { "on" } else { "off" }),
-                Hit::All,
-            ),
-            ("[Close]".to_owned(), Hit::Close),
+            ("↑ Up".to_owned(), Hit::Parent, false),
+            (toggle(self.hidden, "Hidden"), Hit::Hidden, self.hidden),
+            (toggle(self.all, "All files"), Hit::All, self.all),
+            ("Close".to_owned(), Hit::Close, false),
         ];
-        let mut x = inner.x;
-        for (label, hit) in controls {
+        let mut x = inner.x + 1;
+        for (label, hit, on) in controls {
+            let label = format!(" {label} ");
             let cells = UnicodeWidthStr::width(label.as_str()) as u16;
             if x + cells > inner.right() {
                 break;
             }
-            frame.buffer_mut().set_string(
-                x,
-                inner.y + 1,
-                &label,
-                chrome_style().fg(crate::theme::palette().accent),
-            );
+            let style = if on {
+                chrome.tab_active.style().add_modifier(Modifier::BOLD)
+            } else {
+                ui::surface().bg(chrome.tab_inactive.background)
+            };
+            frame.buffer_mut().set_string(x, inner.y + 1, &label, style);
             self.hits.push((Rect::new(x, inner.y + 1, cells, 1), hit));
             x += cells + 1;
         }
-        self.visible_rows = usize::from(inner.height.saturating_sub(4));
+        self.visible_rows = usize::from(inner.height.saturating_sub(3));
         if self.selected < self.scroll {
             self.scroll = self.selected;
         }
         if self.selected >= self.scroll + self.visible_rows {
             self.scroll = (self.selected + 1).saturating_sub(self.visible_rows);
         }
+        let icons = crate::icons::current();
         for (row, (index, entry)) in self
             .entries
             .iter()
@@ -447,34 +454,69 @@ impl Browser {
             .take(self.visible_rows)
             .enumerate()
         {
+            let rect = Rect::new(inner.x, inner.y + 2 + row as u16, inner.width, 1);
+            let selected = index == self.selected && !self.path_focus;
+            let base = if selected {
+                chrome.tab_active.style()
+            } else {
+                ui::surface()
+            };
+            let buffer = frame.buffer_mut();
+            buffer.set_style(rect, base);
+            if selected {
+                buffer.set_string(rect.x, rect.y, "▌", base.fg(chrome.tab_indicator));
+            }
+            let name = safe_text(&entry.path.file_name().unwrap_or_default().to_string_lossy());
+            let icon = if icons == crate::icons::IconSet::Plain {
+                ""
+            } else if entry.directory {
+                "\u{f024b}"
+            } else {
+                icons.path(&entry.path)
+            };
             let label = format!(
-                "{} {}{}",
-                if index == self.selected { "›" } else { " " },
-                safe_text(&entry.path.file_name().unwrap_or_default().to_string_lossy()),
+                "{}{name}{}",
+                if icon.is_empty() {
+                    String::new()
+                } else {
+                    format!("{icon} ")
+                },
                 if entry.directory { "/" } else { "" }
             );
-            let style = if index == self.selected && !self.path_focus {
-                chrome_active()
-            } else if entry.directory {
-                chrome_style().fg(crate::theme::palette().accent)
+            let style = if entry.directory {
+                base.fg(colors.accent)
             } else {
-                chrome_style()
+                base
             };
-            let rect = Rect::new(inner.x, inner.y + 2 + row as u16, inner.width, 1);
-            frame.render_widget(Paragraph::new(clipped(&label, width)).style(style), rect);
+            let style = if selected {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style
+            };
+            let room = usize::from(rect.width.saturating_sub(3));
+            buffer.set_stringn(rect.x + 2, rect.y, clipped(&label, room), room, style);
             self.hits.push((rect, Hit::Entry(index)));
         }
         if inner.height >= 4 {
             frame.render_widget(
-                Paragraph::new(clipped(&safe_text(&self.message), width)).style(chrome_muted()),
-                Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
-            );
-            frame.render_widget(
-                Paragraph::new("Tab: path/list · F2: hidden · F5: all · Esc: close")
-                    .style(chrome_muted()),
-                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+                Paragraph::new(clipped(
+                    &safe_text(&self.message),
+                    usize::from(inner.width.saturating_sub(2)),
+                ))
+                .style(ui::muted()),
+                Rect::new(
+                    inner.x + 1,
+                    inner.bottom() - 1,
+                    inner.width.saturating_sub(2),
+                    1,
+                ),
             );
         }
+        ui::hints(
+            frame,
+            popup,
+            "⏎ open · ⌫ up · tab path · F2 hidden · F5 all · esc close",
+        );
     }
 }
 

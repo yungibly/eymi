@@ -14,9 +14,9 @@ use eymi::{Document, InlineStyle, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Clear, Paragraph},
 };
 use std::{cell::Cell, io, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
@@ -24,6 +24,7 @@ use unicode_width::UnicodeWidthStr;
 
 pub(crate) use crate::theme::document_style;
 use crate::theme::{self, Theme, palette};
+use crate::ui;
 
 pub(crate) fn chrome_style() -> Style {
     let colors = palette();
@@ -49,37 +50,76 @@ fn chrome_focus() -> Style {
     chrome_style().fg(palette().accent)
 }
 
-const HELP_LINES: &[&str] = &[
-    "Type normally. Shift+arrows or drag selects source.",
-    "Ctrl/Alt+Left/Right: words; add Shift to select",
-    "Ctrl/Alt+Backspace/Delete: delete a word",
-    "Home/End: visual row · Ctrl+Home/End: document",
-    "Ctrl+B: bold · Alt+I: italic · Alt+`: inline code",
-    "Tab with selection: indent · Shift+Tab: outdent",
-    "Ctrl+] / Ctrl+[: indent / outdent source lines",
-    "Alt+Up/Down: move lines · add Shift to duplicate",
-    "Ctrl+Z: undo · Ctrl+Y / Ctrl+Shift+Z: redo",
-    "Typing groups by word; paste is one undo step.",
-    "Enter continues lists · Alt+Enter: literal newline",
-    "Ctrl+T: toggle task · Ctrl+E / F6: live/source",
-    "Ctrl+A: select all · Ctrl+C/X/V: copy/cut/paste",
-    "Ctrl+S: save · F4 / Ctrl+Shift+S: Save As",
-    "F5: reload from disk · dirty text needs confirmation",
-    "F2 → Choose theme: preview, apply, and remember colors",
-    "F2 → Toggle Nerd Font icons: optional document/outline symbols",
-    "F2 → Recover documents: open an unsaved crash copy",
-    "Ctrl+N: new · Ctrl+O: open · Ctrl+W: close tab",
-    "F7/F8 or Ctrl+PageUp/PageDown: switch tabs",
-    "F2 / Ctrl+P: commands · Ctrl+G: go to source line",
-    "F9: focus/hide sidebar · arrows/Enter: navigate",
-    "F10: find open document · F11: find heading",
-    "Ctrl+F: find · Ctrl+R: replace · F3/Shift+F3: next/prev",
-    "Search: Tab switches fields; With Enter replaces one.",
-    "Alt+R/A: replace one/all · Escape closes search",
-    "Ctrl+Q: quit, with confirmation for unsaved changes",
-    "Theme changes are available in the command palette.",
-    "UTF-8 files up to 8 MiB. Disk conflicts require Save As.",
-    "Arrows/PageUp/PageDown scroll help. Esc closes help.",
+/// The keyboard reference, grouped the way people look for it.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Writing",
+        &[
+            ("Ctrl+B", "Bold"),
+            ("Alt+I", "Italic"),
+            ("Alt+`", "Inline code"),
+            ("Ctrl+T", "Toggle task"),
+            ("Enter", "Continue a list"),
+            ("Alt+Enter", "Literal newline"),
+            ("Tab / Shift+Tab", "Indent / outdent lines"),
+            ("Ctrl+] / Ctrl+[", "Indent / outdent lines"),
+            ("Alt+↑ / Alt+↓", "Move lines"),
+            ("Alt+Shift+↑ / ↓", "Duplicate lines"),
+            ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+        ],
+    ),
+    (
+        "Selecting",
+        &[
+            ("Shift+arrows", "Extend the selection"),
+            ("Ctrl/Alt+← / →", "Move by word"),
+            ("Ctrl/Alt+Backspace", "Delete a word"),
+            ("Ctrl+A", "Select all"),
+            ("Ctrl+C / X / V", "Copy / cut / paste"),
+        ],
+    ),
+    (
+        "Moving around",
+        &[
+            ("Home / End", "Start / end of row"),
+            ("Ctrl+Home / End", "Start / end of document"),
+            ("Ctrl+G", "Go to line"),
+            ("F11", "Go to heading"),
+            ("F9", "Focus or hide the outline"),
+        ],
+    ),
+    (
+        "Finding",
+        &[
+            ("Ctrl+F", "Find"),
+            ("Ctrl+R", "Find and replace"),
+            ("F3 / Shift+F3", "Next / previous match"),
+            ("Alt+R / Alt+A", "Replace one / all"),
+            ("Tab", "Switch Find and With"),
+        ],
+    ),
+    (
+        "Documents",
+        &[
+            ("Ctrl+N", "New document"),
+            ("Ctrl+O", "Open a file"),
+            ("Ctrl+S", "Save"),
+            ("F4 / Ctrl+Shift+S", "Save as"),
+            ("F5", "Reload from disk"),
+            ("Ctrl+W", "Close tab"),
+            ("F7 / F8", "Previous / next tab"),
+            ("F10", "Switch document"),
+            ("Ctrl+Q", "Quit"),
+        ],
+    ),
+    (
+        "Viewing",
+        &[
+            ("Ctrl+E / F6", "Live or source view"),
+            ("F2 / Ctrl+P", "Commands, themes, icons"),
+            ("F1", "This reference"),
+        ],
+    ),
 ];
 
 type LayoutKey = (
@@ -131,6 +171,7 @@ pub struct App {
     reload_prompt_visible: Cell<bool>,
     last_disk_change: Option<ExternalChange>,
     word_count: Cell<Option<(u64, usize)>>,
+    line_count: Cell<Option<(u64, usize)>>,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -396,6 +437,7 @@ impl App {
             reload_prompt_visible: Cell::new(false),
             last_disk_change: None,
             word_count: Cell::new(None),
+            line_count: Cell::new(None),
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -1231,10 +1273,10 @@ impl App {
                     KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(8),
                     KeyCode::PageDown => self.help_scroll += 8,
                     KeyCode::Home => self.help_scroll = 0,
-                    KeyCode::End => self.help_scroll = HELP_LINES.len() - 1,
+                    KeyCode::End => self.help_scroll = usize::MAX,
                     _ => {}
                 }
-                self.help_scroll = self.help_scroll.min(HELP_LINES.len() - 1);
+                self.help_scroll = self.help_scroll.min(help_sheet(1).len() - 1);
             }
             Overlay::Quit => match key.code {
                 KeyCode::Char('y' | 'Y') => self.save(true),
@@ -1320,11 +1362,15 @@ impl App {
         }
         let search_height = self.search_height(area.height);
         let body_top = body_top(area.height);
-        let prose_width = area
-            .width
-            .saturating_sub(2)
-            .min(if self.live { 88 } else { u16::MAX });
-        let margin = area.width.saturating_sub(prose_width) / 2;
+        // Source and code views number their lines; live prose is a column.
+        let digits = self.gutter_digits(area.width);
+        let (margin, prose_width) = if self.live {
+            let width = area.width.saturating_sub(2).min(88);
+            (area.width.saturating_sub(width) / 2, width)
+        } else {
+            let margin = if digits > 0 { digits + 2 } else { 1 };
+            (margin, area.width.saturating_sub(margin + 1))
+        };
         self.viewport = Rect::new(
             area.x.saturating_add(margin),
             area.y.saturating_add(body_top),
@@ -1414,29 +1460,61 @@ impl App {
         } else {
             None
         };
-        for (screen_row, row) in self
-            .projection
-            .rows
-            .iter()
-            .skip(self.scroll)
-            .take(height)
-            .enumerate()
-        {
+        let colors = palette();
+        let rows = &self.projection.rows;
+        let line_of = |row: usize| {
+            rows[..=row.min(rows.len() - 1)]
+                .iter()
+                .rev()
+                .find_map(|r| r.line)
+        };
+        let caret_line = line_of(cursor_row);
+        let mut line = if self.scroll > 0 {
+            line_of(self.scroll - 1)
+        } else {
+            None
+        };
+        for (screen_row, row) in rows.iter().skip(self.scroll).take(height).enumerate() {
             let y = self.viewport.y + screen_row as u16;
-            let band = row.fill.as_ref().filter(|fill| fill.kind == FillKind::Band);
+            line = row.line.or(line);
+            let current = digits > 0 && line == caret_line;
+            if let Some(number) = row.line.filter(|_| digits > 0) {
+                let style = if current {
+                    document_style()
+                        .fg(colors.foreground)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    document_style().fg(colors.faint)
+                };
+                let text = format!("{number:>width$}", width = usize::from(digits));
+                frame
+                    .buffer_mut()
+                    .set_stringn(area.x + 1, y, &text, usize::from(digits), style);
+            }
+            let mut surface = None;
+            if current {
+                let line = Rect::new(self.viewport.x, y, self.viewport.width, 1);
+                frame
+                    .buffer_mut()
+                    .set_style(line, Style::default().bg(colors.cursorline));
+                surface = Some((0, colors.cursorline));
+            }
             if let Some(fill) = &row.fill {
                 draw_fill(frame, area, self.viewport, fill, y);
+                if fill.kind == FillKind::Band {
+                    surface = Some((fill.from, fill.color));
+                }
             }
             for glyph in &row.glyphs {
                 let selected =
                     glyph.source.start < selection.end && selection.start < glyph.source.end;
                 let mut base = glyph.style;
                 // Glyphs on a surface take its color unless they carry their own.
-                if let Some(fill) = band
-                    && glyph.column as isize >= fill.from
-                    && base.bg == Some(palette().background)
+                if let Some((from, color)) = surface
+                    && glyph.column as isize >= from
+                    && base.bg == Some(colors.background)
                 {
-                    base = base.bg(fill.color);
+                    base = base.bg(color);
                 }
                 let style = crate::search_highlight::style_match(
                     base,
@@ -1457,6 +1535,18 @@ impl App {
                 }
             }
         }
+        if self.document.text().is_empty() && self.markdown && height > 0 {
+            frame.buffer_mut().set_stringn(
+                self.viewport.x,
+                self.viewport.y,
+                "Start writing…",
+                usize::from(self.viewport.width),
+                document_style()
+                    .fg(colors.muted)
+                    .add_modifier(Modifier::ITALIC),
+            );
+        }
+        self.draw_scrollbar(frame, area, height);
         if show_cursor
             && self.overlay == Overlay::None
             && height > 0
@@ -1474,6 +1564,47 @@ impl App {
         }
         self.draw_footer(frame, area);
         self.draw_overlay(frame);
+    }
+
+    /// Number width for the gutter, or zero when it is hidden.
+    fn gutter_digits(&self, width: u16) -> u16 {
+        if self.live || width < 24 {
+            return 0;
+        }
+        let revision = self.document.revision();
+        let count = match self.line_count.get() {
+            Some((cached, count)) if cached == revision => count,
+            _ => {
+                let bytes = self.document.text().as_bytes();
+                let count = 1 + bytes
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, byte)| {
+                        **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+                    })
+                    .count();
+                self.line_count.set(Some((revision, count)));
+                count
+            }
+        };
+        (count.to_string().len() as u16).max(3)
+    }
+
+    /// A thin thumb on the editor's right edge, only when content overflows.
+    fn draw_scrollbar(&self, frame: &mut Frame, area: Rect, height: usize) {
+        let total = self.projection.rows.len();
+        if height == 0 || total <= height || area.width < 3 {
+            return;
+        }
+        let thumb = (height * height / total).clamp(1, height);
+        let top = (self.scroll * height).div_ceil(total).min(height - thumb);
+        let x = area.right() - 1;
+        let style = document_style().fg(palette().faint);
+        for y in top..top + thumb {
+            frame
+                .buffer_mut()
+                .set_string(x, self.viewport.y + y as u16, "▐", style);
+        }
     }
 
     fn search_count(&self) -> String {
@@ -1740,6 +1871,50 @@ impl App {
         })
     }
 
+    /// The badge naming what is being edited: Markdown's view, or the language.
+    fn format_badge(&self) -> (&'static str, &'static str) {
+        let icons = crate::icons::current();
+        if !self.markdown {
+            ("TEXT", icons.file(false))
+        } else if self.live {
+            ("MARKDOWN", icons.file(true))
+        } else {
+            ("SOURCE", icons.file(true))
+        }
+    }
+
+    fn caret_line_column(&self) -> (usize, usize) {
+        let text = self.document.text();
+        let head = self.document.selection().head;
+        let line = text[..head]
+            .graphemes(true)
+            .filter(|g| matches!(*g, "\r" | "\n" | "\r\n"))
+            .count()
+            + 1;
+        let line_start = text[..head].rfind(['\n', '\r']).map_or(0, |i| i + 1);
+        (line, text[line_start..head].graphemes(true).count() + 1)
+    }
+
+    /// What the selection spans, or how long the document is.
+    fn extent(&self) -> String {
+        let selection = self.document.selection();
+        if !selection.is_empty() {
+            let text = self.document.selected_text();
+            let lines = text.lines().count();
+            return if lines > 1 {
+                format!("{lines} lines selected")
+            } else {
+                let chars = text.graphemes(true).count();
+                format!(
+                    "{chars} {} selected",
+                    if chars == 1 { "char" } else { "chars" }
+                )
+            };
+        }
+        let words = self.source_word_count();
+        format!("{words} {}", if words == 1 { "word" } else { "words" })
+    }
+
     /// Render one segmented status line. The caller may pass the full frame
     /// after painting other panes; this does not alter editor or search geometry.
     pub(crate) fn draw_footer(&self, frame: &mut Frame, area: Rect) {
@@ -1749,155 +1924,270 @@ impl App {
         }
         let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
         let colors = theme::chrome_palette();
-        let base = colors.status.style();
-        let badge_style = colors.status_accent.style().add_modifier(Modifier::BOLD);
-        let secondary = colors.status_secondary.style();
-        let position_style = colors.status_secondary.style();
-        let warning = colors.status_warning.style();
         frame.render_widget(Clear, footer);
-        frame.render_widget(Block::default().style(base), footer);
-        let head = self.document.selection().head;
-        let line = self.document.text()[..head]
-            .graphemes(true)
-            .filter(|g| matches!(*g, "\r" | "\n" | "\r\n"))
-            .count()
-            + 1;
-        let line_start = self.document.text()[..head]
-            .rfind(['\n', '\r'])
-            .map_or(0, |i| i + 1);
-        let col = self.document.text()[line_start..head]
-            .graphemes(true)
-            .count()
-            + 1;
-        let location = format!(" Ln {line}, Col {col} ");
+        frame.render_widget(Block::default().style(colors.status.style()), footer);
+        let (line, col) = self.caret_line_column();
+        let location = format!("Ln {line}, Col {col}");
+        let mut bar = StatusBar::new(footer, colors.status.style());
         if let Some(context) = self.footer_context(area.width) {
+            let style = if self.message_is_error {
+                colors.status_warning.style()
+            } else {
+                colors.status.style()
+            };
             let text = format!(" {context}");
-            let text_width = UnicodeWidthStr::width(text.as_str());
-            let show_position =
-                !self.message_is_error && text_width + location.len() < usize::from(footer.width);
-            let width = footer.width
-                - if show_position {
-                    location.len() as u16
-                } else {
-                    0
-                };
+            // Position yields to the whole message; errors take the full row.
+            if self.message_is_error {
+                frame.render_widget(Block::default().style(style), footer);
+            } else if UnicodeWidthStr::width(text.as_str()) + bar.cells(&location, true)
+                < usize::from(footer.width)
+            {
+                bar.push(Side::Right, &location, colors.status_accent.style(), true);
+            }
+            bar.draw(frame);
+            let width = bar.left_edge().saturating_sub(footer.x);
             frame.render_widget(
-                Paragraph::new(text).style(if self.message_is_error { warning } else { base }),
+                Paragraph::new(text).style(style),
                 Rect::new(footer.x, footer.y, width, 1),
             );
-            if show_position {
-                draw_status_segment(
-                    frame,
-                    footer.right() - location.len() as u16,
-                    footer.y,
-                    &location,
-                    position_style,
-                );
-            }
             return;
         }
-        let location = if location.len() <= usize::from(footer.width) {
-            location
-        } else {
-            format!("{line}:{col}")
-        };
-        let location_width = location.len().min(usize::from(footer.width)) as u16;
-        let format = if !self.markdown {
-            "TEXT"
-        } else if self.live {
-            "MARKDOWN"
-        } else {
-            "SOURCE"
-        };
-        let icon = crate::icons::current().file(self.markdown);
+        let (label, icon) = self.format_badge();
         let badge = if icon.is_empty() {
-            format!(" {format} ")
+            label.to_owned()
         } else {
-            format!(" {icon} {format} ")
+            format!("{icon} {label}")
         };
-        let badge_width = UnicodeWidthStr::width(badge.as_str()) as u16;
-        let show_badge = badge_width + location_width <= footer.width;
-        let mut left = footer.x;
-        if show_badge {
-            draw_status_segment(frame, left, footer.y, &badge, badge_style);
-            left += badge_width;
+        let badge_style = if label == "SOURCE" {
+            colors.status_alternate.style()
+        } else {
+            colors.status_accent.style()
         }
-        let mut right = footer.right() - location_width;
-        frame.render_widget(
-            Paragraph::new(location).style(position_style),
-            Rect::new(right, footer.y, location_width, 1),
-        );
-        if show_badge && right.saturating_sub(left) >= 11 {
-            let words = self.source_word_count();
-            let count = format!(" {words} {} ", if words == 1 { "word" } else { "words" });
-            if count.len() + 2 <= usize::from(right - left) {
-                draw_status_segment(frame, left, footer.y, &count, secondary);
-                left += count.len() as u16;
-            }
+        .add_modifier(Modifier::BOLD);
+        let secondary = colors.status_secondary.style();
+        let length = self.document.text().len();
+        let head = self.document.selection().head;
+        let percent = head.saturating_mul(100).checked_div(length).unwrap_or(100);
+        let newline = match eymi::editing::preferred_newline(self.document.text(), 0) {
+            "\r\n" => "CRLF",
+            "\r" => "CR",
+            _ => "LF",
+        };
+        let bom = self.document.text().starts_with('\u{feff}');
+        let encoding = format!("UTF-8{} · {newline}", if bom { " BOM" } else { "" });
+        // Higher priority segments claim space first; each side keeps its order.
+        let fits_badge = bar.fits(&badge, true) && {
+            let pill = bar.cells(&badge, true) + bar.cells(&location, true);
+            pill <= usize::from(footer.width)
+        };
+        if fits_badge {
+            bar.push(Side::Left, &badge, badge_style, true);
         }
-        if show_badge {
-            let length = self.document.text().len();
-            let percent = head.saturating_mul(100).checked_div(length).unwrap_or(100);
-            for metadata in [format!(" {percent}% "), " UTF-8 ".into()] {
-                if metadata.len() + 2 <= usize::from(right.saturating_sub(left)) {
-                    right -= metadata.len() as u16;
-                    draw_status_segment(frame, right, footer.y, &metadata, secondary);
-                }
-            }
+        if !bar.push(Side::Right, &location, colors.status_accent.style(), true) {
+            bar.push(
+                Side::Right,
+                &format!("{line}:{col}"),
+                colors.status_accent.style(),
+                false,
+            );
         }
+        if fits_badge {
+            bar.push(Side::Left, &self.extent(), secondary, false);
+            bar.push(Side::Right, &format!("{percent}%"), secondary, false);
+            bar.push(Side::Right, &encoding, secondary, false);
+        }
+        bar.draw(frame);
     }
 
     pub(crate) fn draw_overlay(&self, frame: &mut Frame) {
         self.reload_prompt_visible.set(false);
-        let reload_fits = frame.area().width >= 44 && frame.area().height >= 9;
-        let (title, body) = match &self.overlay {
-            Overlay::None | Overlay::Search { .. } => return,
-            Overlay::Help => (" Eymi · Help · ↑↓ Scroll ", HELP_LINES[self.help_scroll..].join("\n")),
-            Overlay::Reload if reload_fits => (" Reload from disk ", "Replace local edits with disk text?\nUndo can restore your local edits.\n\nY: Reload  N/Esc: Keep editing".into()),
-            Overlay::Reload => (" Reload ", "Resize to confirm reload.\nEsc: Keep editing".into()),
-            Overlay::Quit => (" Unsaved changes ", "Save before quitting?\n\nY: Save and quit\nN: Discard edits and quit\nEsc: Keep editing".into()),
-            Overlay::SaveAs { path, .. } => (" Save As · new filename ", format!("{}▏\n\nEnter: Save  ·  Esc: Cancel\nExisting files are protected; enter a new path.\n\n{}", safe_text(path), safe_text(&self.message))),
-        };
+        let text = |line: &'static str| Line::from(line);
+        match &self.overlay {
+            Overlay::None | Overlay::Search { .. } => {}
+            Overlay::Help => self.draw_help(frame),
+            Overlay::Reload => {
+                let shown = ui::dialog(
+                    frame,
+                    "Reload from disk",
+                    &[
+                        text("Replace local edits with disk text?"),
+                        Line::from(Span::styled(
+                            "Undo can restore your local edits.",
+                            ui::muted(),
+                        )),
+                    ],
+                    &[("Y", "Reload"), ("N", "Keep editing")],
+                    60,
+                );
+                self.reload_prompt_visible.set(shown);
+            }
+            Overlay::Quit => {
+                ui::dialog(
+                    frame,
+                    "Unsaved changes",
+                    &[text("Save before quitting?")],
+                    &[
+                        ("Y", "Save and quit"),
+                        ("N", "Discard"),
+                        ("Esc", "Keep editing"),
+                    ],
+                    64,
+                );
+            }
+            Overlay::SaveAs { path, .. } => {
+                let colors = palette();
+                let mut body = vec![
+                    Line::from(vec![
+                        Span::styled(
+                            "❯ ",
+                            ui::surface().fg(colors.accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(safe_text(path)),
+                        Span::styled("▏", ui::surface().fg(colors.accent)),
+                    ]),
+                    Line::from(Span::styled(
+                        "Existing files are protected; enter a new path.",
+                        ui::muted(),
+                    )),
+                ];
+                if !self.message.is_empty() {
+                    body.push(Line::from(Span::styled(
+                        safe_text(&self.message),
+                        ui::surface().fg(colors.warning),
+                    )));
+                }
+                ui::dialog(
+                    frame,
+                    "Save As · new filename",
+                    &body,
+                    &[("⏎", "Save"), ("Esc", "Cancel")],
+                    78,
+                );
+            }
+        }
+    }
+
+    /// A two-column keyboard reference when there is room, one otherwise.
+    fn draw_help(&self, frame: &mut Frame) {
         let area = frame.area();
-        let width = area.width.saturating_sub(4).min(78);
-        let height = area
-            .height
-            .saturating_sub(2)
-            .min(if self.overlay == Overlay::Help { 21 } else { 9 });
-        if width < 4 || height < 3 {
+        let width = area.width.saturating_sub(4).min(100);
+        let height = area.height.saturating_sub(2);
+        if width < 24 || height < 5 {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Resize for dialog\nEsc: cancel").style(chrome_style()),
+                Paragraph::new("Resize for help\nEsc: close").style(ui::surface()),
                 area,
             );
             return;
         }
-        let popup = Rect::new(
+        let columns = if width >= 80 { 2 } else { 1 };
+        let sheet = help_sheet(columns);
+        let height = (sheet.len() as u16 + 2).min(height);
+        let rect = Rect::new(
             area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
+            area.y + (area.height - height) / 3,
             width,
             height,
         );
-        frame.render_widget(Clear, popup);
-        frame.render_widget(
-            Paragraph::new(
-                body.lines()
-                    .map(|line| Line::from(line.to_string()))
-                    .collect::<Vec<_>>(),
-            )
-            .wrap(Wrap { trim: false })
-            .style(chrome_style())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(chrome_style().fg(palette().border))
-                    .title_style(chrome_style())
-                    .title(title),
-            ),
-            popup,
-        );
-        if self.overlay == Overlay::Reload && reload_fits {
-            self.reload_prompt_visible.set(true);
+        let inner = ui::panel(frame, rect, "Eymi · Help", None);
+        let visible = usize::from(inner.height);
+        let scroll = self.help_scroll.min(sheet.len().saturating_sub(visible));
+        let column_width = inner.width.saturating_sub(2) / columns as u16;
+        for (row, line) in sheet.iter().skip(scroll).take(visible).enumerate() {
+            for (column, cell) in line.iter().enumerate() {
+                let x = inner.x + 1 + column as u16 * column_width;
+                draw_help_cell(
+                    frame,
+                    Rect::new(x, inner.y + row as u16, column_width, 1),
+                    cell,
+                );
+            }
+        }
+        let hint = if sheet.len() > visible {
+            "↑↓ scroll · esc close"
+        } else {
+            "esc close"
+        };
+        ui::hints(frame, rect, hint);
+    }
+}
+
+/// One cell of the help sheet: a section title or a key and its action.
+enum HelpCell {
+    Blank,
+    Title(&'static str),
+    Key(&'static str, &'static str),
+}
+
+/// Sections flow down the columns, balanced by height.
+fn help_sheet(columns: usize) -> Vec<Vec<HelpCell>> {
+    let heights: Vec<usize> = HELP.iter().map(|(_, keys)| keys.len() + 2).collect();
+    let total: usize = heights.iter().sum();
+    let mut assigned = vec![Vec::new(); columns];
+    let mut column = 0;
+    let mut filled = 0;
+    for (index, height) in heights.iter().enumerate() {
+        if column + 1 < columns && filled > 0 && filled + height / 2 > total.div_ceil(columns) {
+            column += 1;
+            filled = 0;
+        }
+        assigned[column].push(index);
+        filled += height;
+    }
+    let lists: Vec<Vec<HelpCell>> = assigned
+        .into_iter()
+        .map(|sections| {
+            let mut cells = Vec::new();
+            for index in sections {
+                let (title, keys) = HELP[index];
+                if !cells.is_empty() {
+                    cells.push(HelpCell::Blank);
+                }
+                cells.push(HelpCell::Title(title));
+                cells.extend(keys.iter().map(|(key, action)| HelpCell::Key(key, action)));
+            }
+            cells
+        })
+        .collect();
+    let rows = lists.iter().map(Vec::len).max().unwrap_or(0);
+    let mut lists: Vec<_> = lists.into_iter().map(Vec::into_iter).collect();
+    (0..rows)
+        .map(|_| {
+            lists
+                .iter_mut()
+                .map(|cells| cells.next().unwrap_or(HelpCell::Blank))
+                .collect()
+        })
+        .collect()
+}
+
+fn draw_help_cell(frame: &mut Frame, area: Rect, cell: &HelpCell) {
+    let colors = palette();
+    let buffer = frame.buffer_mut();
+    let room = usize::from(area.width.saturating_sub(1));
+    match cell {
+        HelpCell::Blank => {}
+        HelpCell::Title(title) => {
+            buffer.set_stringn(
+                area.x,
+                area.y,
+                title,
+                room,
+                ui::surface()
+                    .fg(colors.heading)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        HelpCell::Key(key, action) => {
+            // Keys right-align in a column that yields to actions when narrow.
+            let keys = 19.min(room / 2);
+            let key = ui::clipped(key, keys);
+            let pad = keys.saturating_sub(UnicodeWidthStr::width(key.as_str()));
+            let x = area.x + pad as u16;
+            buffer.set_stringn(x, area.y, &key, room, ui::surface().fg(colors.accent));
+            let start = area.x + (keys + 2).min(room) as u16;
+            let space = usize::from(area.right().saturating_sub(start + 1));
+            buffer.set_stringn(start, area.y, *action, space, ui::surface());
         }
     }
 }
@@ -1933,9 +2223,105 @@ fn draw_fill(frame: &mut Frame, area: Rect, viewport: Rect, fill: &Fill, y: u16)
     }
 }
 
-fn draw_status_segment(frame: &mut Frame, x: u16, y: u16, text: &str, style: Style) {
-    let width = UnicodeWidthStr::width(text) as u16;
-    frame.render_widget(Paragraph::new(text).style(style), Rect::new(x, y, width, 1));
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// Status segments packed from both edges. Badges gain rounded caps when a
+/// Nerd Font is in use; plain segments are padded blocks.
+struct StatusBar {
+    area: Rect,
+    base: Style,
+    rounded: bool,
+    left: Vec<(String, Style, bool)>,
+    right: Vec<(String, Style, bool)>,
+    used: usize,
+}
+
+impl StatusBar {
+    fn new(area: Rect, base: Style) -> Self {
+        Self {
+            area,
+            base,
+            rounded: crate::icons::current() == crate::icons::IconSet::Nerd,
+            left: Vec::new(),
+            right: Vec::new(),
+            used: 0,
+        }
+    }
+
+    fn cells(&self, text: &str, badge: bool) -> usize {
+        UnicodeWidthStr::width(text) + 2 + 2 * usize::from(badge && self.rounded)
+    }
+
+    /// Room for the segment and a one-cell gap from its neighbours.
+    fn fits(&self, text: &str, badge: bool) -> bool {
+        let gaps = usize::from(!self.left.is_empty()) + usize::from(!self.right.is_empty());
+        self.used + gaps + self.cells(text, badge) < usize::from(self.area.width)
+    }
+
+    fn push(&mut self, side: Side, text: &str, style: Style, badge: bool) -> bool {
+        if !self.fits(text, badge) {
+            return false;
+        }
+        self.used += self.cells(text, badge) + 1;
+        let segment = (text.to_owned(), style, badge);
+        match side {
+            Side::Left => self.left.push(segment),
+            Side::Right => self.right.push(segment),
+        }
+        true
+    }
+
+    /// The first column right-hand segments occupy.
+    fn left_edge(&self) -> u16 {
+        let right: usize = self
+            .right
+            .iter()
+            .map(|(text, _, badge)| self.cells(text, *badge) + 1)
+            .sum();
+        self.area.right().saturating_sub(right as u16)
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        let y = self.area.y;
+        let mut x = self.area.x;
+        for (text, style, badge) in &self.left {
+            x = self.segment(frame, x, y, text, *style, *badge) + 1;
+        }
+        let mut x = self.left_edge() + 1;
+        for (text, style, badge) in self.right.iter().rev() {
+            x = self.segment(frame, x, y, text, *style, *badge) + 1;
+        }
+    }
+
+    fn segment(
+        &self,
+        frame: &mut Frame,
+        x: u16,
+        y: u16,
+        text: &str,
+        style: Style,
+        badge: bool,
+    ) -> u16 {
+        let buffer = frame.buffer_mut();
+        let mut x = x;
+        let cap = self.base.fg(style.bg.unwrap_or(Color::Reset));
+        if badge && self.rounded {
+            buffer.set_string(x, y, "\u{e0b6}", cap);
+            x += 1;
+        }
+        let padded = format!(" {text} ");
+        buffer.set_string(x, y, &padded, style);
+        x += UnicodeWidthStr::width(padded.as_str()) as u16;
+        if badge && self.rounded {
+            buffer.set_string(x, y, "\u{e0b4}", cap);
+            x += 1;
+        }
+        x
+    }
 }
 
 fn draw_search_buttons(
@@ -2158,11 +2544,10 @@ mod tests {
         );
         assert_eq!(app.document.text(), "one\ntwo");
         assert!(!app.document.can_undo());
-        assert!(
-            HELP_LINES
-                .iter()
-                .any(|line| line.contains("F10") && line.contains("F11"))
-        );
+        let keys: Vec<_> = HELP.iter().flat_map(|(_, keys)| keys.iter()).collect();
+        for key in ["F10", "F11", "Alt+↑ / Alt+↓", "Alt+Shift+↑ / ↓"] {
+            assert!(keys.iter().any(|(name, _)| *name == key), "{key}");
+        }
     }
 
     fn disk_app(source: &str) -> (tempfile::TempDir, PathBuf, App) {
@@ -2205,6 +2590,13 @@ mod tests {
             );
             assert_eq!(
                 (buffer[(98, 23)].fg, buffer[(98, 23)].bg),
+                (
+                    colors.status_accent.foreground,
+                    colors.status_accent.background
+                )
+            );
+            assert_eq!(
+                (buffer[(80, 23)].fg, buffer[(80, 23)].bg),
                 (
                     colors.status_secondary.foreground,
                     colors.status_secondary.background
@@ -2550,7 +2942,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(screen.contains("Replace local edits with disk text?"));
-        assert!(screen.contains("Y: Reload  N/Esc: Keep editing"));
+        assert!(screen.contains(" Y  Reload   N  Keep editing"), "{screen}");
         for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
             key(&mut app, KeyCode::Char('y'), modifiers);
             assert_eq!(app.document.text(), local);
@@ -2766,7 +3158,7 @@ mod tests {
         key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
         let screen = crate::simulation::snapshot(&mut app, 42, 12).unwrap();
-        assert!(screen.contains("Esc closes help."));
+        assert!(screen.contains("This reference"), "{screen}");
         key(&mut app, KeyCode::Home, KeyModifiers::NONE);
         assert_eq!(app.help_scroll, 0);
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);

@@ -209,11 +209,15 @@ fn prose_wraps_whole_words_and_retains_source_whitespace() {
     );
     assert_eq!(projected.hit(0, 11).offset, boundary);
     assert_eq!(projected.hit(1, 0).offset, boundary);
-    // Literal source and code preserve their column-based layout.
+    // Markdown source view still wraps prose at words; code and plain-text
+    // files preserve their column-based layout.
     assert_eq!(
         display(&project(text, 0, 13, false)),
-        "alpha beta g\namma delta"
+        "alpha beta \ngamma delta"
     );
+    let plain = Parsed::new(text, Document::new(text).markdown(), false);
+    let plain = Projection::build(text, &plain, Selection::caret(0), 13, false);
+    assert_eq!(display(&plain), "alpha beta g\namma delta");
     let code = format!("```\n{text}\n```\n");
     assert!(display(&project(&code, 0, 13, true)).contains("alpha beta g\namma delta"));
 }
