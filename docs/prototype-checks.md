@@ -130,6 +130,26 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- **Safety checkpoint**, September 22, 2026, before the `v0.2.0` version
+  bump: **368 tests** pass with both Rust 1.98.0 and Rust 1.89.0 (71 core,
+  286 app/helpers, 6 CLI, 5 real-process PTY), with formatting and strict
+  all-target Clippy. Saves now require actual write access rather than any
+  write bit, keep a replaced file's group and, under sudo, its owner, refuse
+  to take over another user's file, keep macOS ACLs and extended attributes,
+  and create new files with the umask. Twenty-five hostile inputs of up to
+  7 MiB each open in at most 1.4 s in an optimized build: runaway emphasis,
+  200,000 nested quotes, 20,000 levels of bold, huge tables, unterminated
+  code constructs, and escape sequences in text and filenames. The two that
+  previously ran for minutes are now linear or budgeted. Directories,
+  devices, FIFOs, oversized files, and empty paths are refused promptly. A
+  seeded generator ran 300,000 rounds of code in all 41 languages and
+  Markdown through highlighting and layout without a panic or broken
+  contract; 300 rounds run with the tests.
+- The same debug executable, SHA-256
+  `4f8873acae671d93cf5689bd3d475d734d0a9c9ef0d471224924a6ebbe076fda`, passes
+  **380 terminal assertions over 90 captures** across all nine dark suites in
+  `target/visual-safety-final-dark/`. Only the three known original-Unicode
+  PNG exports fail.
 - **Rendering and chrome checkpoint**, September 22, 2026, unreleased on
   `main`: **362 tests** pass with both Rust 1.98.0 and Rust 1.89.0 (70 core,
   281 app/helpers, 6 CLI, 5 real-process PTY), with formatting and strict
