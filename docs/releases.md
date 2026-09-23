@@ -6,11 +6,13 @@ in [`yungibly/homebrew-tap`](https://github.com/yungibly/homebrew-tap).
 The source uses the MIT license. Theme and dependency licenses accompany every
 binary archive and are installed by the formula under Eymi's shared data directory.
 
-`v0.1.0` is [published](https://github.com/yungibly/eymi/releases/tag/v0.1.0).
-Its [CI](https://github.com/yungibly/eymi/actions/runs/35737489994),
-[native release builds](https://github.com/yungibly/eymi/actions/runs/35737769797),
-and [three-platform Homebrew installation checks](https://github.com/yungibly/eymi/actions/runs/35738337830)
-all passed before the tap update.
+`v0.2.0` is [published](https://github.com/yungibly/eymi/releases/tag/v0.2.0).
+Its [CI](https://github.com/yungibly/eymi/actions/runs/35808147599),
+[native release builds](https://github.com/yungibly/eymi/actions/runs/35808271377),
+and [three-platform Homebrew installation checks](https://github.com/yungibly/eymi/actions/runs/35808607212)
+all passed before the tap update. The first release,
+[`v0.1.0`](https://github.com/yungibly/eymi/releases/tag/v0.1.0), passed the
+same checks.
 
 ## CI and supported packages
 

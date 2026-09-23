@@ -130,6 +130,23 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- **Public release `v0.2.0`**, September 22, 2026, ships commit `2c5fadb`.
+  [CI](https://github.com/yungibly/eymi/actions/runs/35808147599) passes all four
+  Linux/macOS × stable/1.89 jobs. The
+  [native release workflow](https://github.com/yungibly/eymi/actions/runs/35808271377)
+  passes on Apple Silicon, Intel macOS, and Linux x86_64, including the 368 Rust
+  tests, 19 package/Homebrew regressions, attribution checks, optimized builds,
+  and extracted-archive version/help/theme/snapshot smoke tests. Before
+  publication, the downloaded draft archives matched `SHA256SUMS` and passed
+  `package.py verify`, and the Apple Silicon binary reported `eymi 0.2.0` and
+  rendered a table and code block without changing the file's bytes.
+- [Homebrew verification](https://github.com/yungibly/eymi/actions/runs/35808607212)
+  installs the published archives anonymously and passes `brew install` and
+  `brew test` on macOS arm64, macOS Intel, and Linux x86_64 before updating the
+  tap. The live `Formula/eymi.rb` matches a locally generated formula
+  byte-for-byte, and its checksums match the release's `SHA256SUMS`. Dependency
+  notices still cover 70 macOS or 68 Linux locked packages; no dependency
+  changed since `v0.1.0`.
 - **Safety checkpoint**, September 22, 2026, before the `v0.2.0` version
   bump: **368 tests** pass with both Rust 1.98.0 and Rust 1.89.0 (71 core,
   286 app/helpers, 6 CLI, 5 real-process PTY), with formatting and strict
