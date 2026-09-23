@@ -831,13 +831,78 @@ def workflows(session):
     session.check(not any(c["png_error"] for c in session.captures), "All ASCII workflow captures export native PNGs")
 
 
+def rendering(session):
+    """Rendered Markdown in a real terminal: grids, surfaces, marks, and exact source."""
+    def saved_exact(message):
+        session.key("Ctrl+s")
+        session.check(session.fixture.read_bytes() == session.original_bytes, message)
+        session.key("Escape")
+
+    def row_of(cells, y):
+        return "".join(c["char"] for c in sorted((c for c in cells if c["y"] == y), key=lambda c: c["x"]))
+
+    def document_rows(cells):
+        """Each row's document side, after any outline separator."""
+        return [row_of(cells, y).split("│")[-1] for y in sorted({c["y"] for c in cells})]
+
+    session.key("Ctrl+End")
+    _, cells = session.capture("01-rendered-120x40")
+    text = session.state()["text"]
+    for glyph in ["╭", "┼", "╰", "▎", "▌"]:
+        session.check(any(c["char"] == glyph for c in cells), f"Rendered frame draws {glyph}")
+    for literal in ["[x]", "[!NOTE]", "```", "| :---", "**bold**"]:
+        session.check(literal not in text, f"Rendered frame conceals {literal}")
+    header = next(find_cells(cells, "Name"))
+    session.check(all(c["bold"] for c in header), "Table header is bold")
+    count = next(find_cells(cells, "Count"))
+    number = next(chunk for chunk in find_cells(cells, "42") if chunk[0]["y"] > count[0]["y"])
+    session.check(number[-1]["x"] == count[-1]["x"], "Right-aligned column ends under its header")
+    tab = next(find_cells(cells, "rust"))
+    session.check("▄" in row_of(cells, tab[0]["y"]), "Code surface opens with a labelled edge")
+    keyword = next(find_cells(cells, "fn"))
+    name = next(find_cells(cells, "main"))
+    session.check(keyword[0]["fg"] != name[0]["fg"], "Code keywords and names are highlighted differently")
+    struck = next(find_cells(cells, "Finished"))
+    session.check(all(c["strike"] for c in struck), "Checked tasks are struck through")
+    plain = next(find_cells(cells, "Open"))
+    session.check(not any(c["strike"] for c in plain), "Open tasks stay plain")
+    title = next(find_cells(cells, "Note"))
+    session.check(all(c["bold"] for c in title), "Alert marker becomes a bold title")
+    # The outline repeats the title on the same row; take the document's.
+    heading = max(find_cells(cells, "Rendering acceptance"), key=lambda chunk: chunk[0]["x"])
+    mark = [c for c in cells if c["y"] == heading[0]["y"] and c["x"] == heading[0]["x"] - 2]
+    session.check(mark and mark[0]["char"] == "▌", "Top heading carries a margin mark")
+    session.check(any(set(row.strip()) == {"─"} for row in document_rows(cells)),
+                  "Thematic break draws a rule")
+    saved_exact("Rendering never changes saved source")
+
+    click_word(session, "apples")
+    _, cells = session.capture("02-table-disclosed")
+    session.check("| apples | 42 |" in session.state()["text"], "Clicking a table cell reveals its source")
+    session.check(not any(c["char"] == "╭" for c in cells), "Disclosed table draws no grid")
+
+    session.key("Ctrl+e")
+    _, cells = session.capture("03-source-view")
+    text = session.state()["text"]
+    session.check("# Rendering acceptance" in text and "```rust" in text, "Source view shows exact Markdown")
+    session.check(any(row.strip().startswith("1 # Rendering") for row in document_rows(cells)),
+                  "Source view numbers its lines")
+    session.check("SOURCE" in text, "Status line names source view")
+    session.key("Ctrl+e")
+    session.call("resize", 80, 24)
+    session.key("Ctrl+End")
+    session.capture("04-rendered-80x24")
+    saved_exact("Every view and size preserves exact source")
+    session.check(not any(c["png_error"] for c in session.captures), "Rendering captures export as PNGs")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tool", required=True)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="enhanced")
-    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows"], default="all")
+    parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows", "rendering"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
     parser.add_argument("--theme", choices=["dark", "light"],
                         help="Editor theme; omitted for compatibility with older binaries")
@@ -847,22 +912,22 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(__file__, args.output / "scenario.py")
     shutil.copyfile(HELPER, args.output / "session.py")
-    for fixture in ["acceptance.md", "screenshots.md", "writing.md", "chrome.md", "workflows.md"]:
+    for fixture in ["acceptance.md", "screenshots.md", "writing.md", "chrome.md", "workflows.md", "rendering.md"]:
         shutil.copyfile(Path(__file__).with_name(fixture), args.output / fixture)
     shutil.copyfile(ROOT / "third_party/iterm2-themes/palettes.json" if (ROOT / "third_party/iterm2-themes/palettes.json").exists() else Path(__file__).with_name("palettes.json"), args.output / "palettes.json")
     write_json(args.output / "invocation.json", vars(args) | {"output": str(args.output.resolve())})
-    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows"] if args.suite == "all" else [args.suite]
+    suites = ["captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows", "rendering"] if args.suite == "all" else [args.suite]
     for suite in suites:
-        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md", "chrome": "chrome.md", "workflows": "workflows.md"}.get(suite, "screenshots.md")
+        fixture = {"unicode": "acceptance.md", "workspace": "writing.md", "themes": "writing.md", "reliability": "writing.md", "chrome": "chrome.md", "workflows": "workflows.md", "rendering": "rendering.md"}.get(suite, "screenshots.md")
         app_args = ["--theme", args.theme] if args.theme else []
         if args.icons:
             app_args.extend(["--icons", args.icons])
         session = Session(args.tool, args.binary, args.output / suite,
                           Path(__file__).with_name(fixture), args.palette,
-                          size=(160, 45) if suite in ("workspace", "themes", "reliability", "chrome", "workflows") else (80, 24), app_args=app_args, font=args.font)
+                          size=(120, 40) if suite == "rendering" else (160, 45) if suite in ("workspace", "themes", "reliability", "chrome", "workflows") else (80, 24), app_args=app_args, font=args.font)
         try:
             session.start()
-            title = "Workflow acceptance" if suite == "workflows" else "Chrome acceptance" if suite == "chrome" else "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
+            title = "Workflow acceptance" if suite == "workflows" else "Chrome acceptance" if suite == "chrome" else "Rendering acceptance" if suite == "rendering" else "A calmer place to write" if suite in ("workspace", "themes", "reliability") else "Terminal acceptance"
             session.call("expect", "text", title, "--timeout", 3000)
             if suite == "captures":
                 captures(session)
@@ -878,6 +943,8 @@ def main():
                 chrome(session)
             elif suite == "workflows":
                 workflows(session)
+            elif suite == "rendering":
+                rendering(session)
             else:
                 unicode_and_edits(session)
             session.key("Escape")
