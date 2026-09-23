@@ -909,7 +909,12 @@ impl Workspace {
         let labels: Vec<_> = (0..self.tabs.len())
             .map(|index| tabs::TabLabel {
                 name: self.name(index),
-                icon: crate::icons::current().file(self.tabs[index].editor.is_markdown()),
+                icon: match self.tabs[index].editor.language() {
+                    Some(language) if crate::icons::current() == crate::icons::IconSet::Nerd => {
+                        language.icon()
+                    }
+                    _ => crate::icons::current().file(self.tabs[index].editor.is_markdown()),
+                },
                 dirty: self.tabs[index].editor.document.is_dirty(),
             })
             .collect();

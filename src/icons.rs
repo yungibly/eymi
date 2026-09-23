@@ -53,7 +53,7 @@ impl IconSet {
             (Self::Nerd, false) => "\u{f15c}",
         }
     }
-    /// A file's icon from its name, falling back to a generic document.
+    /// A file's icon from its name: its language's, or a generic document.
     pub fn path(self, path: &std::path::Path) -> &'static str {
         let markdown = path
             .extension()
@@ -64,7 +64,10 @@ impl IconSet {
                     "md" | "markdown" | "mdown" | "mkd" | "mdx"
                 )
             });
-        self.file(markdown)
+        match crate::syntax::Language::for_path(path) {
+            Some(language) if self == Self::Nerd && !markdown => language.icon(),
+            _ => self.file(markdown),
+        }
     }
     pub fn outline(self) -> &'static str {
         match self {

@@ -3,6 +3,7 @@
 use super::overlaps;
 use crate::{
     icons::{self, IconSet},
+    syntax::{self, Language, Token},
     theme::{self, Palette, Theme},
 };
 use eymi::{
@@ -38,6 +39,7 @@ pub(super) struct Surface {
     /// Content segments as parsed, excluding container prefixes.
     pub lines: Vec<Range<usize>>,
     pub label: String,
+    pub language: Option<&'static Language>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,7 +81,14 @@ pub struct Parsed {
 }
 
 impl Parsed {
-    pub fn new(source: &str, snapshot: MarkdownSnapshot, markdown: bool) -> Self {
+    /// Markdown renders its structure and highlights fenced code; other
+    /// files highlight as `language` when one was detected.
+    pub fn new(
+        source: &str,
+        snapshot: MarkdownSnapshot,
+        markdown: bool,
+        language: Option<&'static Language>,
+    ) -> Self {
         let mut parsed = Self {
             snapshot,
             theme: theme::current_theme(),
@@ -92,8 +101,12 @@ impl Parsed {
             rules: Vec::new(),
             tables: Vec::new(),
         };
+        let colors = theme::palette();
         if markdown {
-            parsed.analyze(source, &theme::palette());
+            parsed.analyze(source, &colors);
+        } else if let Some(language) = language {
+            let whole = markdown::bom_len(source)..source.len();
+            parsed.highlight(language, source, std::slice::from_ref(&whole), &colors);
         }
         parsed.styles.sort_by_key(|(range, _)| range.start);
         parsed
@@ -108,6 +121,7 @@ impl Parsed {
         let mut surface: Option<Surface> = None;
         let mut table: Option<Table> = None;
         let mut in_head = false;
+        let mut html: Option<Vec<Range<usize>>> = None;
         let mut quotes: Vec<(Range<usize>, Option<BlockQuoteKind>)> = Vec::new();
         for (event, range) in
             Parser::new_ext(&source[bom..], markdown::options()).into_offset_iter()
@@ -259,21 +273,25 @@ impl Parsed {
                         }
                         CodeBlockKind::Indented => (None, String::new()),
                     };
+                    let language = Language::for_fence(&label);
                     surface = Some(Surface {
                         range,
                         open,
                         close: None,
                         lines: Vec::new(),
-                        label,
+                        label: self.labelled(&label, language),
+                        language,
                     });
                 }
                 Event::Start(Tag::MetadataBlock(_)) => {
+                    let language = Language::for_fence("yaml");
                     surface = Some(Surface {
                         open: Some(line_text(source, range.start)),
                         close: last_line(source, &range).filter(|line| line.start > range.start),
                         range,
                         lines: Vec::new(),
-                        label: "front matter".into(),
+                        label: self.labelled("front matter", language),
+                        language,
                     });
                 }
                 Event::Text(_) if surface.is_some() => {
@@ -288,6 +306,9 @@ impl Parsed {
                         }
                         for fence in [&done.open, &done.close].into_iter().flatten() {
                             self.syntax(fence.clone(), muted);
+                        }
+                        if let Some(language) = done.language {
+                            self.highlight(language, source, &done.lines, colors);
                         }
                         self.surfaces.push(done);
                     }
@@ -379,6 +400,19 @@ impl Parsed {
                     self.rules.push(line.clone());
                     self.syntax(line, muted);
                 }
+                Event::Start(Tag::HtmlBlock) => html = Some(Vec::new()),
+                Event::Html(_) if html.is_some() => {
+                    if let Some(lines) = &mut html {
+                        lines.push(range);
+                    }
+                }
+                Event::End(TagEnd::HtmlBlock) => {
+                    if let (Some(lines), Some(language)) =
+                        (html.take(), Language::for_fence("html"))
+                    {
+                        self.highlight(language, source, &lines, colors);
+                    }
+                }
                 Event::InlineHtml(_) | Event::Html(_) => {
                     self.styles
                         .push((range, Style::default().fg(colors.syntax.tag)));
@@ -405,6 +439,31 @@ impl Parsed {
             }
             keep
         });
+    }
+
+    fn highlight(
+        &mut self,
+        language: &Language,
+        source: &str,
+        segments: &[Range<usize>],
+        colors: &Palette,
+    ) {
+        let spans = syntax::highlight(language, source, segments);
+        self.styles.extend(
+            spans
+                .into_iter()
+                .map(|(range, token)| (range, token_style(token, colors))),
+        );
+    }
+
+    /// A code surface's tab: its fence word, led by the language's icon.
+    fn labelled(&self, label: &str, language: Option<&'static Language>) -> String {
+        match language {
+            Some(language) if self.icons == IconSet::Nerd && !label.is_empty() => {
+                format!("{} {label}", language.icon())
+            }
+            _ => label.into(),
+        }
     }
 
     /// Conceal syntax in rendered blocks; it reads as muted when disclosed.
@@ -627,6 +686,29 @@ impl Parsed {
         }
         ranges
     }
+}
+
+fn token_style(token: Token, colors: &Palette) -> Style {
+    let ink = &colors.syntax;
+    let (color, modifier) = match token {
+        Token::Comment => (ink.comment, Modifier::ITALIC),
+        Token::Keyword => (ink.keyword, Modifier::empty()),
+        Token::Type => (ink.types, Modifier::empty()),
+        Token::Function => (ink.function, Modifier::empty()),
+        Token::String => (ink.string, Modifier::empty()),
+        Token::Escape => (ink.escape, Modifier::empty()),
+        Token::Number | Token::Constant => (ink.constant, Modifier::empty()),
+        Token::Operator => (ink.operator, Modifier::empty()),
+        Token::Punctuation => (ink.punctuation, Modifier::empty()),
+        Token::Macro | Token::Attribute | Token::Label => (ink.special, Modifier::empty()),
+        Token::Property => (ink.property, Modifier::empty()),
+        Token::Tag => (ink.tag, Modifier::empty()),
+        Token::Variable => (ink.variable, Modifier::empty()),
+        Token::Heading => (colors.headings[0], Modifier::BOLD),
+        Token::Inserted => (ink.inserted, Modifier::empty()),
+        Token::Deleted => (ink.deleted, Modifier::empty()),
+    };
+    Style::default().fg(color).add_modifier(modifier)
 }
 
 fn callout(kind: BlockQuoteKind) -> usize {

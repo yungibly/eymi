@@ -1,3 +1,4 @@
+use crate::syntax::Language;
 use crate::{
     clipboard::{self, Clipboard},
     file_io::{ExternalChange, FileState},
@@ -153,6 +154,8 @@ pub struct App {
     file: Option<FileState>,
     pub live: bool,
     markdown: bool,
+    /// Detected for other text files; Markdown highlights fenced code itself.
+    language: Option<&'static Language>,
     parsed: Parsed,
     pub projection: Projection,
     pub viewport: Rect,
@@ -185,6 +188,7 @@ pub struct App {
 impl App {
     pub(crate) fn open_bounded(path: PathBuf, max_bytes: usize) -> io::Result<Self> {
         let markdown = is_markdown(&path);
+        let language = (!markdown).then(|| Language::for_path(&path)).flatten();
         let (text, file) = FileState::open_bounded(path, max_bytes)?;
         if text.contains('\0') {
             return Err(io::Error::new(
@@ -192,7 +196,12 @@ impl App {
                 "This file contains binary NUL bytes; choose a UTF-8 text file",
             ));
         }
-        Ok(Self::new(text, Some(file), markdown))
+        let mut app = Self::new(text, Some(file), markdown);
+        if language.is_some() {
+            app.language = language;
+            app.parsed = app.analysis();
+        }
+        Ok(app)
     }
 
     /// Restore recovery content in a detached, explicitly unsaved tab. Selection
@@ -283,11 +292,7 @@ impl App {
                     self.file = Some(file);
                     self.last_disk_change = None;
                     self.deactivate();
-                    self.parsed = Parsed::new(
-                        self.document.text(),
-                        self.document.markdown(),
-                        self.markdown,
-                    );
+                    self.parsed = self.analysis();
                     self.layout_key = None;
                     self.preferred_column = None;
                     self.affinity = Affinity::Downstream;
@@ -409,9 +414,22 @@ impl App {
         self.markdown
     }
 
+    pub(crate) fn language(&self) -> Option<&'static Language> {
+        self.language
+    }
+
+    fn analysis(&self) -> Parsed {
+        Parsed::new(
+            self.document.text(),
+            self.document.markdown(),
+            self.markdown,
+            self.language,
+        )
+    }
+
     fn new(text: String, file: Option<FileState>, markdown: bool) -> Self {
         let document = Document::new(text);
-        let parsed = Parsed::new(document.text(), document.markdown(), markdown);
+        let parsed = Parsed::new(document.text(), document.markdown(), markdown, None);
         let projection =
             Projection::build(document.text(), &parsed, document.selection(), 80, markdown);
         Self {
@@ -419,6 +437,7 @@ impl App {
             file,
             live: markdown,
             markdown,
+            language: None,
             parsed,
             projection,
             viewport: Rect::default(),
@@ -1303,11 +1322,7 @@ impl App {
                             self.document.mark_saved();
                             self.overlay = Overlay::None;
                             self.should_exit = quit_after;
-                            self.parsed = Parsed::new(
-                                self.document.text(),
-                                self.document.markdown(),
-                                self.markdown,
-                            );
+                            self.parsed = self.analysis();
                             self.layout_key = None;
                         }
                         Err(error) => self.set_message(error.to_string()),
@@ -1384,11 +1399,7 @@ impl App {
             || self.parsed.theme != theme::current_theme()
             || self.parsed.icons != crate::icons::current()
         {
-            self.parsed = Parsed::new(
-                self.document.text(),
-                self.document.markdown(),
-                self.markdown,
-            );
+            self.parsed = self.analysis();
         }
         // Layout depends on the selection only through what it discloses, so
         // caret movement within a block or in source view reuses it.
@@ -1611,23 +1622,26 @@ impl App {
         if self.live || width < 24 {
             return 0;
         }
+        (self.line_count().to_string().len() as u16).max(3)
+    }
+
+    fn line_count(&self) -> usize {
         let revision = self.document.revision();
-        let count = match self.line_count.get() {
-            Some((cached, count)) if cached == revision => count,
-            _ => {
-                let bytes = self.document.text().as_bytes();
-                let count = 1 + bytes
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, byte)| {
-                        **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
-                    })
-                    .count();
-                self.line_count.set(Some((revision, count)));
-                count
-            }
-        };
-        (count.to_string().len() as u16).max(3)
+        if let Some((cached, count)) = self.line_count.get()
+            && cached == revision
+        {
+            return count;
+        }
+        let bytes = self.document.text().as_bytes();
+        let count = 1 + bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, byte)| {
+                **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+            })
+            .count();
+        self.line_count.set(Some((revision, count)));
+        count
     }
 
     /// A thin thumb on the editor's right edge, only when content overflows.
@@ -1934,14 +1948,17 @@ impl App {
     }
 
     /// The badge naming what is being edited: Markdown's view, or the language.
-    fn format_badge(&self) -> (&'static str, &'static str) {
+    fn format_badge(&self) -> (String, &'static str) {
         let icons = crate::icons::current();
-        if !self.markdown {
-            ("TEXT", icons.file(false))
-        } else if self.live {
-            ("MARKDOWN", icons.file(true))
-        } else {
-            ("SOURCE", icons.file(true))
+        let nerd = icons == crate::icons::IconSet::Nerd;
+        match (self.markdown, self.language) {
+            (true, _) if self.live => ("MARKDOWN".into(), icons.file(true)),
+            (true, _) => ("SOURCE".into(), icons.file(true)),
+            (false, Some(language)) => (
+                language.name().to_uppercase(),
+                if nerd { language.icon() } else { "" },
+            ),
+            (false, None) => ("TEXT".into(), icons.file(false)),
         }
     }
 
@@ -1962,8 +1979,19 @@ impl App {
         (line, text[line_start..head].graphemes(true).count() + 1)
     }
 
-    /// Document length in words, and how much of it a selection covers.
+    /// Document length, in lines for code and words for prose, and how much
+    /// of it a selection covers.
     fn extent(&self) -> String {
+        if self.language.is_some() {
+            let lines = self.line_count();
+            let selected = self.document.selected_text().lines().count();
+            let unit = if lines == 1 { "line" } else { "lines" };
+            return if selected > 0 {
+                format!("{selected} of {lines} {unit}")
+            } else {
+                format!("{lines} {unit}")
+            };
+        }
         let words = self.source_word_count();
         let unit = if words == 1 { "word" } else { "words" };
         if self.document.selection().is_empty() {
@@ -2012,6 +2040,7 @@ impl App {
             return;
         }
         let (label, icon) = self.format_badge();
+        let label = label.as_str();
         let badge = if icon.is_empty() {
             label.to_owned()
         } else {
@@ -3251,6 +3280,29 @@ mod tests {
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "one\r\ntwo");
         assert_eq!(app.document.selected_text(), "one\r\ntwo");
+    }
+
+    #[test]
+    fn code_files_name_their_language_and_count_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.py");
+        std::fs::write(&path, "def run():\n    return 1\n").unwrap();
+        let mut app = App::open(Some(path)).unwrap();
+        let footer = status_text(&draw(&mut app, 80, 24), 23);
+        assert!(footer.starts_with(" PYTHON "), "{footer}");
+        assert!(footer.contains("3 lines"), "{footer}");
+        app.document
+            .set_selection(Selection { anchor: 0, head: 5 })
+            .unwrap();
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains("1 of 3 lines"));
+        let plain = dir.path().join("notes.txt");
+        std::fs::write(&plain, "just words here\n").unwrap();
+        let mut app = App::open(Some(plain)).unwrap();
+        let footer = status_text(&draw(&mut app, 80, 24), 23);
+        assert!(
+            footer.starts_with(" TEXT ") && footer.contains("3 words"),
+            "{footer}"
+        );
     }
 
     #[test]

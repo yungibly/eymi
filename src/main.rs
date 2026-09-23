@@ -10,7 +10,6 @@ mod search;
 mod search_highlight;
 mod settings;
 mod simulation;
-#[allow(dead_code)]
 mod syntax;
 mod terminal;
 mod theme;

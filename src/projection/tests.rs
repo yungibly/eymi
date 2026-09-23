@@ -7,7 +7,7 @@ fn project(text: &str, caret: usize, width: usize, live: bool) -> Projection {
     let doc = Document::new(text);
     Projection::build(
         text,
-        &Parsed::new(text, doc.markdown(), true),
+        &Parsed::new(text, doc.markdown(), true, None),
         Selection {
             anchor: caret,
             head: caret,
@@ -141,7 +141,7 @@ fn bom_is_preserved_but_invisible_and_cr_is_a_line_boundary() {
 fn pointer_padding_preserves_adjacent_text_controls_and_clipping() {
     let text = "intro\n\n- [ ] one\n- [x] two";
     let doc = Document::new(text);
-    let parsed = Parsed::new(text, doc.markdown(), true);
+    let parsed = Parsed::new(text, doc.markdown(), true, None);
     let mut p = Projection::build(text, &parsed, Selection::caret(0), 80, true);
     let mut first = p.rows[2]
         .glyphs
@@ -215,7 +215,7 @@ fn prose_wraps_whole_words_and_retains_source_whitespace() {
         display(&project(text, 0, 13, false)),
         "alpha beta \ngamma delta"
     );
-    let plain = Parsed::new(text, Document::new(text).markdown(), false);
+    let plain = Parsed::new(text, Document::new(text).markdown(), false, None);
     let plain = Projection::build(text, &plain, Selection::caret(0), 13, false);
     assert_eq!(display(&plain), "alpha beta g\namma delta");
     let code = format!("```\n{text}\n```\n");
@@ -261,7 +261,7 @@ fn word_wrap_handles_hidden_markers_wide_text_tabs_and_unbroken_words() {
 }
 
 fn parsed(text: &str) -> Parsed {
-    Parsed::new(text, Document::new(text).markdown(), true)
+    Parsed::new(text, Document::new(text).markdown(), true, None)
 }
 
 fn row_text(row: &VisualRow) -> String {
@@ -513,4 +513,41 @@ fn nested_items_hang_exactly_under_their_text() {
     let next = &p.rows[first + 1];
     let continued = next.glyphs.iter().find(|g| !g.source.is_empty()).unwrap();
     assert_eq!(continued.column, text_column, "{rows:#?}");
+}
+
+#[test]
+fn fenced_code_front_matter_and_html_blocks_are_highlighted_by_language() {
+    let text = "---\nkey: value\n---\n\n```rust\nfn main() {}\n```\n\n<div class=\"x\">hi</div>\n\n```nonsense\nfn plain()\n```\n";
+    let p = project(text, text.len(), 60, true);
+    let colors = crate::theme::palette();
+    let glyph = |needle: &str, nth: usize| {
+        let at = text.match_indices(needle).nth(nth).unwrap().0;
+        p.rows
+            .iter()
+            .flat_map(|row| &row.glyphs)
+            .find(|glyph| glyph.source.start == at)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(glyph("fn", 0).style.fg, Some(colors.syntax.keyword));
+    assert_eq!(glyph("main", 0).style.fg, Some(colors.syntax.function));
+    assert_eq!(glyph("key", 0).style.fg, Some(colors.syntax.property));
+    assert_eq!(glyph("div", 0).style.fg, Some(colors.syntax.tag));
+    // Unknown languages stay plain code text.
+    assert_eq!(glyph("fn", 1).style.fg, Some(colors.foreground));
+}
+
+#[test]
+fn other_files_highlight_as_their_language_without_markdown_rendering() {
+    let text = "# not a heading\nfn go() {}\n";
+    let rust = crate::syntax::Language::for_path(std::path::Path::new("x.rs"));
+    let parsed = Parsed::new(text, Document::new(text).markdown(), false, rust);
+    let p = Projection::build(text, &parsed, Selection::caret(0), 40, false);
+    assert_eq!(display(&p), text);
+    let keyword = p.rows[1].glyphs.iter().find(|g| g.text == "f").unwrap();
+    assert_eq!(
+        keyword.style.fg,
+        Some(crate::theme::palette().syntax.keyword)
+    );
+    assert!(p.rows.iter().all(|row| row.fill.is_none()));
 }
