@@ -338,6 +338,103 @@ fn narrow_tables_wrap_cells_inside_fitted_columns_or_stay_source() {
 }
 
 #[test]
+fn headerless_tables_drop_the_empty_header_and_rule_wrapped_rows() {
+    let text = "intro\n\n| | |\n|---|---|\n| Source | 3,554 lines |\n| Engine | `Player.tsx` is long, with refs (`blockedRef`, `failedRef`) |\n| Usage | zero |\n\nafter\n";
+    let p = project(text, 0, 40, true);
+    let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+    let top = rows.iter().position(|r| r.starts_with('╭')).unwrap();
+    let bottom = rows.iter().position(|r| r.starts_with('╰')).unwrap();
+    let table = &rows[top..=bottom];
+    assert!(
+        table[1].starts_with("│ Source │ 3,554 lines "),
+        "{table:#?}"
+    );
+    // The engine row wraps, so a rule closes every row but the last.
+    let rules: Vec<_> = (top..=bottom)
+        .filter(|row| rows[*row].starts_with('├'))
+        .collect();
+    assert_eq!(rules.len(), 2, "{table:#?}");
+    for rule in &rules {
+        assert!(!p.rows[*rule].navigable);
+        assert_eq!(p.rows[*rule].line, None);
+    }
+    assert!(rows[rules[0] + 1].starts_with("│ Engine │"), "{table:#?}");
+    assert!(
+        rows[rules[1] + 1].starts_with("│ Usage  │ zero "),
+        "{table:#?}"
+    );
+    assert_eq!(rules[1] + 2, bottom);
+    // Code keeps its padding and punctuation on the same line.
+    for row in table {
+        let cell = row.split('│').nth(2).unwrap_or("").trim();
+        assert!(
+            !cell.starts_with([',', ')']) && !cell.ends_with('('),
+            "{table:#?}"
+        );
+    }
+    // Source lines still count the hidden header and delimiter.
+    assert_eq!(p.rows[top + 1].line, Some(5));
+    assert_eq!(p.rows[rules[0] + 1].line, Some(6));
+    assert_eq!(p.rows[rules[1] + 1].line, Some(7));
+    assert_eq!(rows[bottom + 2], "after");
+    assert_eq!(p.rows[bottom + 2].line, Some(9));
+    let source = text.find("Source").unwrap();
+    assert_eq!(p.cursor(source), (top + 1, 2));
+    assert_eq!(p.hit(top + 1, 2).offset, source);
+    assert_eq!(p.navigable_row(top - 1, 1), top + 1);
+    assert_eq!(p.navigable_row(rules[0] - 1, 1), rules[0] + 1);
+    // Clicking the top border reveals the table from its first line.
+    assert_eq!(p.hit(top, 3).offset, text.find("| |").unwrap());
+}
+
+#[test]
+fn lone_headers_and_aligned_wrapped_cells_keep_tidy_edges() {
+    let text = "x\n\n| Only header |\n| --- |\n\n| n | d |\n| --- | ---: |\n| a | one two three four five six seven |\n\nend\n";
+    let p = project(text, 0, 24, true);
+    let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+    let top = rows.iter().position(|r| r.starts_with('╭')).unwrap();
+    assert_eq!(rows[top + 1], "│ Only header │");
+    assert!(rows[top + 2].starts_with('╰'), "{rows:#?}");
+    // Right-aligned lines end at the column edge, not a space before it.
+    let second = rows.iter().rposition(|r| r.starts_with('╭')).unwrap();
+    let cells: Vec<_> = rows[second + 3..]
+        .iter()
+        .take_while(|r| r.starts_with('│'))
+        .collect();
+    assert!(cells.len() > 1, "{rows:#?}");
+    for row in cells {
+        assert!(row.ends_with(" │") && !row.ends_with("  │"), "{rows:#?}");
+    }
+    let end = rows.iter().position(|r| r == "end").unwrap();
+    assert_eq!(p.rows[end].line, Some(10));
+}
+
+#[test]
+fn code_spans_wrap_with_their_padding_and_punctuation() {
+    let text = "intro\n\nRefs (`blockedRef`, `failedRef`, `graphRef`, `modeRef`) wrap here.";
+    let row_of = |p: &Projection, offset: usize| {
+        p.rows
+            .iter()
+            .position(|row| row.glyphs.iter().any(|g| g.source.start == offset))
+            .unwrap()
+    };
+    for width in 16..64 {
+        let p = project(text, 0, width, true);
+        let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+        for word in ["blockedRef", "failedRef", "graphRef", "modeRef"] {
+            let at = text.find(word).unwrap();
+            let end = at + word.len();
+            // Opening padding, text, closing padding, and what follows.
+            assert_eq!(row_of(&p, at - 1), row_of(&p, at), "{rows:#?}");
+            assert_eq!(row_of(&p, end - 1), row_of(&p, end), "{rows:#?}");
+            assert_eq!(row_of(&p, end), row_of(&p, end + 1), "{rows:#?}");
+        }
+        let open = text.find('(').unwrap();
+        assert_eq!(row_of(&p, open), row_of(&p, open + 1), "{rows:#?}");
+    }
+}
+
+#[test]
 fn code_surfaces_hide_fences_and_carry_a_language_tab() {
     let text = "intro\n\n```rust\nfn x() {}\n```\n";
     let p = project(text, 0, 40, true);

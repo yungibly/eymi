@@ -153,6 +153,9 @@ struct Atom<'a> {
     source: Range<usize>,
     style: Option<Style>,
     task: Option<usize>,
+    /// Source whitespace, where words may break. Decorations never break
+    /// one, so a code span's padding stays with its text and punctuation.
+    space: bool,
 }
 
 struct Layout<'a> {
@@ -244,6 +247,7 @@ impl<'a> Layout<'a> {
                 source: decoration.range.clone(),
                 style: decoration.style,
                 task: decoration.task,
+                space: false,
             };
         }
         let grapheme = self.source[offset..]
@@ -255,6 +259,7 @@ impl<'a> Layout<'a> {
             source: offset..offset + grapheme.len(),
             style: None,
             task: None,
+            space: grapheme.chars().all(char::is_whitespace),
         }
     }
 
@@ -288,7 +293,7 @@ impl<'a> Layout<'a> {
     fn place(&mut self, atom: Atom<'a>) {
         let start = atom.source.start;
         let end = atom.source.end;
-        let whitespace = atom.text.chars().all(char::is_whitespace);
+        let whitespace = atom.space;
         let is_tab = atom.text == "\t";
         let (mut displayed, mut width) = self.display(atom.text);
         let has_text = self.row_text;
@@ -348,23 +353,23 @@ impl<'a> Layout<'a> {
             {
                 index += 1;
             }
-            let text = if let Some(decoration) = self
+            let (text, space) = if let Some(decoration) = self
                 .decorations
                 .get(index)
                 .filter(|d| d.range.start == offset)
             {
                 offset = decoration.range.end;
                 index += 1;
-                decoration.replacement.as_str()
+                (decoration.replacement.as_str(), false)
             } else {
                 let grapheme = self.source[offset..].graphemes(true).next().unwrap();
                 offset += grapheme.len();
-                grapheme
+                (grapheme, grapheme.chars().any(char::is_whitespace))
             };
             if text.is_empty() {
                 continue;
             }
-            if text.chars().any(char::is_whitespace) {
+            if space {
                 break;
             }
             // Control characters display as one-cell symbols.
@@ -652,6 +657,7 @@ impl<'a> Layout<'a> {
                         width,
                         source: atom.source,
                         style,
+                        space: atom.space,
                     });
                 }
                 atoms_by_cell.push(atoms);
@@ -704,15 +710,41 @@ impl<'a> Layout<'a> {
         self.rows[first].line = None;
         self.rows[first].end = self.rows[first].start;
         self.push_virtual(&rule("╭", "┬", "╮"), border);
+        // An empty header is how Markdown writes a table without one; it is
+        // omitted when rows follow it.
+        let headless =
+            table.rows.len() > 1 && grid.cells[0].iter().flatten().all(|atom| atom.width == 0);
+        let wrapped: Vec<Vec<Vec<Vec<CellAtom>>>> = grid
+            .cells
+            .into_iter()
+            .map(|cells| {
+                cells
+                    .into_iter()
+                    .zip(&grid.widths)
+                    .map(|(atoms, width)| wrap_cell(atoms, *width))
+                    .collect()
+            })
+            .collect();
+        let heights: Vec<usize> = wrapped
+            .iter()
+            .map(|lines| lines.iter().map(Vec::len).max().unwrap_or(1).max(1))
+            .collect();
+        // Once a row wraps, rules between rows show where each one ends.
+        let ruled = heights.iter().skip(1).any(|height| *height > 1);
         let mut start_line = self.line;
-        for (index, (row, cells)) in table.rows.iter().zip(grid.cells).enumerate() {
-            let lines: Vec<Vec<Vec<CellAtom>>> = cells
-                .into_iter()
-                .zip(&grid.widths)
-                .map(|(atoms, width)| wrap_cell(atoms, *width))
-                .collect();
-            let height = lines.iter().map(Vec::len).max().unwrap_or(1).max(1);
-            for visual in 0..height {
+        for (index, (row, lines)) in table.rows.iter().zip(wrapped).enumerate() {
+            if index == 0 && headless {
+                start_line += 2;
+                continue;
+            }
+            if index > 1 && ruled {
+                let mut between = VisualRow::new(row.line.start, None);
+                between.navigable = false;
+                self.rows.push(between);
+                self.column = 0;
+                self.push_virtual(&rule("├", "┼", "┤"), border);
+            }
+            for visual in 0..heights[index] {
                 let mut next = VisualRow::new(row.line.start, (visual == 0).then_some(start_line));
                 next.end = row.line.end;
                 self.rows.push(next);
@@ -759,14 +791,17 @@ impl<'a> Layout<'a> {
                 }
             }
             start_line += 1;
+            // The delimiter line separates a header from rows that follow it.
             if index == 0 {
-                let mut separator = VisualRow::new(table.delimiter.start, Some(start_line));
-                separator.end = table.delimiter.end;
-                separator.navigable = false;
-                self.rows.push(separator);
-                self.column = 0;
-                self.positions.insert(table.delimiter.start, self.here());
-                self.push_virtual(&rule("├", "┼", "┤"), border);
+                if table.rows.len() > 1 {
+                    let mut separator = VisualRow::new(table.delimiter.start, Some(start_line));
+                    separator.end = table.delimiter.end;
+                    separator.navigable = false;
+                    self.rows.push(separator);
+                    self.column = 0;
+                    self.positions.insert(table.delimiter.start, self.here());
+                    self.push_virtual(&rule("├", "┼", "┤"), border);
+                }
                 start_line += 1;
             }
         }
@@ -839,6 +874,7 @@ struct CellAtom {
     width: usize,
     source: Range<usize>,
     style: Style,
+    space: bool,
 }
 
 /// Advance a sorted cursor past structures ending before `start`.
@@ -940,8 +976,7 @@ fn wrap_cell(atoms: Vec<CellAtom>, width: usize) -> Vec<Vec<CellAtom>> {
     let mut index = 0;
     while index < atoms.len() {
         let atom = &atoms[index];
-        let blank = atom.text.chars().all(char::is_whitespace);
-        if blank && atom.width > 0 {
+        if atom.space && atom.width > 0 {
             if used + atom.width > width || used == 0 && lines.len() > 1 {
                 lines.last_mut().unwrap().push(CellAtom {
                     width: 0,
@@ -957,7 +992,7 @@ fn wrap_cell(atoms: Vec<CellAtom>, width: usize) -> Vec<Vec<CellAtom>> {
         }
         let word_end = atoms[index..]
             .iter()
-            .position(|a| a.width > 0 && a.text.chars().all(char::is_whitespace))
+            .position(|a| a.width > 0 && a.space)
             .map_or(atoms.len(), |at| index + at);
         let word: usize = atoms[index..word_end].iter().map(|a| a.width).sum();
         if used > 0 && used + word > width && word <= width {
@@ -973,6 +1008,18 @@ fn wrap_cell(atoms: Vec<CellAtom>, width: usize) -> Vec<Vec<CellAtom>> {
             used += atom.width;
         }
         index = word_end;
+    }
+    // A space where a line wraps takes no room, so aligned lines meet
+    // their edge.
+    for line in &mut lines {
+        for atom in line.iter_mut().rev() {
+            if atom.space {
+                atom.width = 0;
+                atom.text.clear();
+            } else if atom.width > 0 {
+                break;
+            }
+        }
     }
     // Trailing spaces never widen a cell past its column.
     for line in &mut lines {
