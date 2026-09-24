@@ -130,6 +130,42 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 
 ## Verification record
 
+- **Public release `v0.2.1`**, September 24, 2026, ships commit `2f80e97`.
+  [CI](https://github.com/yungibly/eymi/actions/runs/35973616461) passes all four
+  Linux/macOS × stable/1.89 jobs. The
+  [native release workflow](https://github.com/yungibly/eymi/actions/runs/35973817712)
+  passes on Apple Silicon, Intel macOS, and Linux x86_64, including the 377 Rust
+  tests on macOS and 376 on Linux, 19 package/Homebrew regressions, attribution
+  checks, optimized builds, and extracted-archive smoke tests. Before
+  publication, the downloaded draft archives matched `SHA256SUMS` and passed
+  `package.py verify`, and the Apple Silicon binary reported `eymi 0.2.1` and
+  rendered a headerless table with wrapped rows and a code block without
+  changing the file's bytes.
+- [Homebrew verification](https://github.com/yungibly/eymi/actions/runs/35974597706)
+  passes `brew install` and `brew test` on macOS arm64, macOS Intel, and Linux
+  x86_64 before updating the tap. The live `Formula/eymi.rb` matches a locally
+  generated formula byte-for-byte, and its checksums match the release's
+  `SHA256SUMS`. Dependency notices still cover 70 macOS or 68 Linux locked
+  packages; no dependency changed since `v0.1.0`.
+- **Table and navigation checkpoint**, September 24, 2026, before the `v0.2.1`
+  version bump: **377 tests** pass with both Rust 1.98.0 and Rust 1.89.0 (71
+  core, 295 app/helpers, 6 CLI, 5 real-process PTY), with formatting and
+  strict all-target Clippy. New tests cover headerless tables, rules between
+  wrapped rows, aligned wrapped cells, header-only tables, code spans that
+  wrap with their padding and punctuation, hanging indents for items that
+  open with a long word or code, narrow alert titles in every kind and icon
+  set, and jumps that land a third of the way down. A seeded generator lays
+  out 200 tables with and without headers at five widths. An independent
+  comparison with the `v0.2.0` layout, covering 132,000 list and quote
+  layouts, 32,000 prose layouts, and 3,000 generated tables at 14 widths in
+  both icon sets, found one regression: alert titles clipped beside their
+  rails in very narrow windows. It is fixed and tested.
+- The release commit's debug executable, SHA-256
+  `1e859ae89e4e91f5beb31ce0aaa6bda7bbf1837f7b885e729a790daa1d23c164`, passes
+  **380 terminal assertions over 90 captures** across all nine dark suites in
+  `target/visual-v0.2.1-dark/`. Only the three known original-Unicode PNG
+  exports fail. The workflows suite now recognizes its fixture by a sentence
+  that stays in view after a heading jump.
 - **Public release `v0.2.0`**, September 22, 2026, ships commit `2c5fadb`.
   [CI](https://github.com/yungibly/eymi/actions/runs/35808147599) passes all four
   Linux/macOS × stable/1.89 jobs. The
