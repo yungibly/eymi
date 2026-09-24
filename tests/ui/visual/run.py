@@ -717,7 +717,9 @@ def workflows(session):
         count("Open documents", 1)
         session.capture(f"04-document-picker-{width}x{height}")
         session.key("Enter")
-        session.check("Alpha line" in session.state()["text"], f"Document acceptance reaches the fixture at {width} columns")
+        # A heading jump at the previous size may have scrolled past the first lines.
+        session.check("Keep this exact sentence selected." in session.state()["text"],
+                      f"Document acceptance reaches the fixture at {width} columns")
         go(3)
         chooser("F11", "plnchkpt")
         count("Headings", 1)
