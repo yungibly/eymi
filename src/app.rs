@@ -164,6 +164,9 @@ pub struct App {
     affinity: Affinity,
     dragging: bool,
     follow_cursor: bool,
+    /// Set by a navigation jump: the next draw places the caret's row at a
+    /// reading position instead of just inside the viewport.
+    reveal: bool,
     anchor_screen_row: Option<usize>,
     clipboard: Clipboard,
     search: Search,
@@ -446,6 +449,7 @@ impl App {
             affinity: Affinity::Downstream,
             dragging: false,
             follow_cursor: true,
+            reveal: false,
             anchor_screen_row: None,
             clipboard: Clipboard::internal(),
             search: Search::default(),
@@ -538,6 +542,7 @@ impl App {
         self.preferred_column = None;
         self.move_to(offset.min(self.document.text().len()), false);
         self.follow_cursor = true;
+        self.reveal = true;
         self.layout_key = None;
     }
 
@@ -1436,6 +1441,13 @@ impl App {
         }
         let (cursor_row, cursor_col) = self.caret_position();
         let height = self.viewport.height as usize;
+        // A jump lands a third of the way down, with what follows it in view,
+        // unless the document ends first.
+        if std::mem::take(&mut self.reveal) && height > 0 {
+            self.scroll = cursor_row
+                .saturating_sub(height / 3)
+                .min(self.projection.rows.len().saturating_sub(height));
+        }
         if self.follow_cursor && height > 0 {
             if cursor_row < self.scroll {
                 self.scroll = cursor_row;
@@ -4959,6 +4971,40 @@ mod tests {
         assert_eq!(app.document.selection(), Selection::caret(text.len()));
         assert_eq!(app.document.text(), text);
         assert!(!app.document.is_dirty());
+    }
+
+    #[test]
+    fn source_jumps_land_a_third_of_the_way_down() {
+        let filler = "A paragraph.\n\n".repeat(40);
+        let text = format!("# Top\n\n{filler}## Middle\n\n{filler}## End\n\nlast\n");
+        let mut app = App::new(text.clone(), None, true);
+        draw(&mut app, 80, 24);
+        let height = usize::from(app.viewport.height);
+        let reading = height / 3;
+        let middle = text.find("## Middle").unwrap();
+        app.jump_to_source(middle);
+        draw(&mut app, 80, 24);
+        assert_eq!(app.caret_position().0 - app.scroll, reading);
+        // A target already on screen moves to the same place.
+        let visible = middle + "## Middle\n\n".len() + "A paragraph.\n\n".len() * 5;
+        assert!(app.projection.cursor(visible).0 < app.scroll + height);
+        app.jump_to_source(visible);
+        draw(&mut app, 80, 24);
+        assert_eq!(app.caret_position().0 - app.scroll, reading);
+        // Ordinary movement still scrolls only as far as it must.
+        let scroll = app.scroll;
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        draw(&mut app, 80, 24);
+        assert_eq!(app.scroll, scroll);
+        // The document's end stays at the bottom rather than rising above it.
+        app.jump_to_source(text.find("## End").unwrap());
+        draw(&mut app, 80, 24);
+        assert_eq!(app.scroll, app.projection.rows.len() - height);
+        assert!(app.caret_position().0 - app.scroll > reading);
+        app.jump_to_source(text.find("A paragraph").unwrap());
+        draw(&mut app, 80, 24);
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.document.text(), text);
     }
 
     #[test]

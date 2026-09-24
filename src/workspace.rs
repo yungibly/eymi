@@ -1775,6 +1775,34 @@ mod tests {
     }
 
     #[test]
+    fn outline_clicks_bring_a_heading_a_third_of_the_way_down() {
+        let mut app = Workspace::open(None).unwrap();
+        let filler = "a paragraph\n\n".repeat(40);
+        let source = format!("# One\n\n{filler}## Two\n\n{filler}");
+        app.editor_mut().document = eymi::Document::new(source.clone());
+        draw(&mut app, 120, 36);
+        let two = app
+            .sidebar
+            .hits
+            .iter()
+            .find(|(_, target)| *target == Target::Heading(1))
+            .unwrap()
+            .0;
+        click_rect(&mut app, two);
+        draw(&mut app, 120, 36);
+        let editor = app.editor();
+        assert_eq!(
+            editor.document.selection().head,
+            source.find("## Two").unwrap()
+        );
+        assert_eq!(
+            editor.caret_position().0 - editor.scroll,
+            usize::from(editor.viewport.height) / 3
+        );
+        assert!(!editor.document.is_dirty());
+    }
+
+    #[test]
     fn sidebar_rebuilds_outline_on_edits_tabs_and_plain_text() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("text.txt");
