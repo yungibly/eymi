@@ -297,6 +297,16 @@ impl<'a> Layout<'a> {
         let is_tab = atom.text == "\t";
         let (mut displayed, mut width) = self.display(atom.text);
         let has_text = self.row_text;
+        // Continuation rows hang where the line's content begins, so its first
+        // word stays beside the marker: the next row has no more room. Content
+        // too wide to start there, such as a long alert title, starts a row.
+        if self.context.first_row == self.rows.len() - 1
+            && self.context.content_column.is_none()
+            && start >= self.context.content
+            && self.column + width <= self.limit
+        {
+            self.context.content_column = Some(self.column);
+        }
         // Move a complete prose word to the next row when it fits there. Keep
         // every source whitespace glyph, including trailing spaces.
         let wrap_word = !self.context.literal && self.word_start && !whitespace && has_text && {
@@ -316,12 +326,6 @@ impl<'a> Layout<'a> {
             }
         }
         self.anchor_fill(start);
-        if self.context.first_row == self.rows.len() - 1
-            && self.context.content_column.is_none()
-            && start >= self.context.content
-        {
-            self.context.content_column = Some(self.column);
-        }
         self.positions.insert(start, self.here());
         let style = self.style(&atom);
         let column = self.column;
@@ -364,7 +368,7 @@ impl<'a> Layout<'a> {
             } else {
                 let grapheme = self.source[offset..].graphemes(true).next().unwrap();
                 offset += grapheme.len();
-                (grapheme, grapheme.chars().any(char::is_whitespace))
+                (grapheme, grapheme.chars().all(char::is_whitespace))
             };
             if text.is_empty() {
                 continue;

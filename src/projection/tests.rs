@@ -432,6 +432,101 @@ fn code_spans_wrap_with_their_padding_and_punctuation() {
         let open = text.find('(').unwrap();
         assert_eq!(row_of(&p, open), row_of(&p, open + 1), "{rows:#?}");
     }
+    // The space CommonMark strips inside each end of a span is padding too.
+    let text = "intro\n\nTo show a tick, write `` `tick` `` in the source.";
+    let tick = text.find("`` `").unwrap();
+    let close = text.rfind(" ``").unwrap();
+    for width in 12..48 {
+        let p = project(text, 0, width, true);
+        let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+        assert_eq!(row_of(&p, tick), row_of(&p, tick + 3), "{rows:#?}");
+        assert_eq!(row_of(&p, close - 1), row_of(&p, close), "{rows:#?}");
+    }
+}
+
+#[test]
+fn stripped_code_span_spaces_join_the_padding() {
+    let text = "x\n\nwrite `` `tick` `` or ` a ` but not `  `";
+    let p = project(text, 0, 80, true);
+    let background = crate::theme::palette().code_background;
+    let mut chips: Vec<String> = Vec::new();
+    let mut previous = false;
+    for glyph in &p.rows[2].glyphs {
+        let chip = glyph.style.bg == Some(background);
+        if chip && !previous {
+            chips.push(String::new());
+        }
+        if chip {
+            chips.last_mut().unwrap().push_str(&glyph.text);
+        }
+        previous = chip;
+    }
+    // A span of only spaces keeps them all.
+    assert_eq!(chips, [" `tick` ", " a ", "    "]);
+}
+
+#[test]
+fn alert_titles_too_wide_for_their_rails_start_a_row() {
+    use crate::icons::{self, IconSet};
+    let old_icons = icons::current();
+    for set in [IconSet::Plain, IconSet::Nerd] {
+        icons::set(set);
+        for (kind, title) in [
+            ("NOTE", "Note"),
+            ("TIP", "Tip"),
+            ("IMPORTANT", "Important"),
+            ("WARNING", "Warning"),
+            ("CAUTION", "Caution"),
+        ] {
+            for depth in 1..=3 {
+                let quote = "> ".repeat(depth);
+                let text = format!("intro\n\n{quote}[!{kind}]\n{quote}Body.\n");
+                for width in 12..28 {
+                    let p = project(&text, 0, width, true);
+                    let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+                    let context = format!("{set:?} {kind} width {width}: {rows:#?}");
+                    assert!(rows.iter().any(|r| r.contains(title)), "{context}");
+                    for glyph in p.rows.iter().flat_map(|r| &r.glyphs) {
+                        assert!(glyph.column + glyph.width < width, "{context}");
+                    }
+                }
+            }
+        }
+    }
+    icons::set(old_icons);
+}
+
+#[test]
+fn a_line_opening_with_a_long_word_or_code_keeps_its_hang() {
+    for (text, hang) in [
+        (
+            "x\n\n- `useCallbackWithDependencies` keeps the rest under its text\n",
+            2,
+        ),
+        (
+            "x\n\n- [ ] `useCallbackWithDependencies` keeps the rest under it\n",
+            2,
+        ),
+        (
+            "x\n\n> `useCallbackWithDependencies` keeps the rest under its rail\n",
+            2,
+        ),
+        (
+            "x\n\n1. supercalifragilisticexpialidocious keeps the rest aligned\n",
+            3,
+        ),
+    ] {
+        for width in 16..48 {
+            let p = project(text, 0, width, true);
+            let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+            let first = p.rows.iter().position(|r| r.line == Some(3)).unwrap();
+            let wrapped = p.rows[first + 1..].iter().take_while(|r| r.line.is_none());
+            for row in wrapped {
+                let text = row.glyphs.iter().find(|g| !g.source.is_empty()).unwrap();
+                assert_eq!(text.column, hang, "width {width}: {rows:#?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -787,6 +882,66 @@ fn generated_sources_keep_highlighting_and_layout_contracts() {
         let text = noise.text(MARKDOWN_PIECES, count);
         let doc = Document::new(&text);
         let parsed = Parsed::new(&text, doc.markdown(), true, None);
+        check_layouts(&text, &parsed, &mut noise);
+    }
+}
+
+#[rustfmt::skip]
+const CELL_PIECES: &[&str] = &[
+    "word", " ", "  ", "`code`", "`two words`", "``tick`s``", "(", ")", ",", ".", "**bold**",
+    "*it*", "[link](u)", "界", "e\u{301}", "\t", "`", "\\|", "an-unbroken-identifier-here",
+];
+
+fn generated_row(noise: &mut Noise, columns: usize) -> String {
+    let mut row = String::from("|");
+    for _ in 0..columns {
+        let count = noise.below(12);
+        row.push(' ');
+        row.push_str(&noise.text(CELL_PIECES, count));
+        row.push_str(" |");
+    }
+    row + "\n"
+}
+
+/// Generated tables, headed or not, whose cells mix code, emphasis, and
+/// punctuation, keep rectangular grids and move forward through source.
+#[test]
+fn generated_tables_keep_rectangular_grids_and_source_order() {
+    let mut noise = Noise(0x517c_c1b7_2722_0a95);
+    for round in 0..200 {
+        let columns = 1 + noise.below(3);
+        let header = if round % 2 == 0 {
+            format!("|{}\n", " |".repeat(columns))
+        } else {
+            generated_row(&mut noise, columns)
+        };
+        let delimiter: String = (0..columns)
+            .map(|_| [" --- |", " :-: |", " --: |"][noise.below(3)])
+            .collect();
+        let count = noise.below(5);
+        let body: String = (0..count)
+            .map(|_| generated_row(&mut noise, columns))
+            .collect();
+        let text = format!("intro\n\n{header}|{delimiter}\n{body}\nend\n");
+        let parsed = parsed(&text);
+        for width in [12, 17, 24, 40, 88] {
+            let p = Projection::build(&text, &parsed, Selection::caret(0), width, true);
+            let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+            if let Some(top) = rows.iter().position(|r| r.starts_with('╭')) {
+                let bottom = top + rows[top..].iter().position(|r| r.starts_with('╰')).unwrap();
+                let widths: Vec<usize> = p.rows[top..=bottom]
+                    .iter()
+                    .map(|row| row.glyphs.iter().map(|g| g.width).sum())
+                    .collect();
+                assert!(
+                    widths.iter().all(|w| *w == widths[0]),
+                    "{text:?}\n{rows:#?}"
+                );
+                assert!(widths[0] < width, "{text:?}\n{rows:#?}");
+            }
+            let lines: Vec<_> = p.rows.iter().filter_map(|r| r.line).collect();
+            assert!(lines.windows(2).all(|pair| pair[0] < pair[1]), "{text:?}");
+        }
         check_layouts(&text, &parsed, &mut noise);
     }
 }

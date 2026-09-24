@@ -248,12 +248,22 @@ impl Parsed {
                         range.clone(),
                         Style::default().fg(colors.code).bg(colors.code_background),
                     ));
-                    // Backtick runs become padding inside the code surface.
+                    // Backtick runs become padding inside the code surface,
+                    // with the space CommonMark strips inside each of them.
                     let ticks = raw.bytes().take_while(|b| *b == b'`').count();
                     if ticks > 0 && raw.len() > 2 * ticks && raw.ends_with(&raw[..ticks]) {
+                        let inner = &raw[ticks..raw.len() - ticks];
+                        // Line endings count as spaces here, as they do there.
+                        let strip = usize::from(
+                            inner.starts_with(' ')
+                                && inner.ends_with(' ')
+                                && inner.bytes().any(|b| !matches!(b, b' ' | b'\n' | b'\r'))
+                                && boundary(source, range.start + ticks + 1)
+                                && boundary(source, range.end - ticks - 1),
+                        );
                         for run in [
-                            range.start..range.start + ticks,
-                            range.end - ticks..range.end,
+                            range.start..range.start + ticks + strip,
+                            range.end - ticks - strip..range.end,
                         ] {
                             self.styles.push((run.clone(), muted));
                             self.decorations.push(Decoration {
